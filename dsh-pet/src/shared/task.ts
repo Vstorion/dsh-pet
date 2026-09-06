@@ -214,7 +214,8 @@ export async function fetchTaskStream(baseUrl: string, petId: string): Promise<T
 /** 弹窗样式 —— 两端注入同一份（与 CHAT_CSS 同模式；视觉对齐浏览器/桌面）。
  *  窗口形态：标题栏 + 工作区/会话行 + 滚动消息区 + 底部输入。字体与气泡同款（上首软糖体）。 */
 export const TASK_CSS = [
-  '.dsh-pet-task{position:fixed;z-index:2147483002;width:420px;max-width:86vw;',
+  '.dsh-pet-task{position:fixed;z-index:2147483002;width:500px;max-width:88vw;',
+  'max-height:min(680px,calc(100vh - 10px));',
   'background:rgba(255,255,255,.985);border:1px solid rgba(0,0,0,.14);border-radius:12px;',
   'box-shadow:0 12px 40px rgba(0,0,0,.26);color:#2b2b2b;font-size:13px;line-height:1.5;',
   "font-family:'ShangshouSoftCandy','Yuanti SC','YouYuan','幼圆','Comic Sans MS','PingFang SC','Microsoft YaHei',sans-serif;",
@@ -232,7 +233,7 @@ export const TASK_CSS = [
   '.dsh-pet-task-row button{flex:none;font-family:inherit;font-size:12px;color:#2b2b2b;',
   'border:1px solid rgba(0,0,0,.16);border-radius:6px;padding:3px 9px;background:#fff;cursor:pointer}',
   '.dsh-pet-task-row button:hover{background:rgba(0,0,0,.05)}',
-  '.dsh-pet-task-msgs{flex:1;min-height:180px;max-height:480px;overflow-y:auto;padding:8px 10px;',
+  '.dsh-pet-task-msgs{flex:1;min-height:140px;max-height:480px;overflow-y:auto;padding:8px 10px;',
   'user-select:text;display:flex;flex-direction:column;gap:6px}',
   '.dsh-pet-task-msg{max-width:96%;padding:6px 10px;border-radius:9px;white-space:pre-wrap;',
   'overflow-wrap:anywhere;font-size:14px;cursor:pointer}',
@@ -400,6 +401,8 @@ export function mountTaskDialog(opts: {
   let lastSeq = 0; // 帧去重水位（event.seq 单调；<= 已处理）
   let placeholderEl: HTMLElement | null = null; // 「正在努力工作...」占位行
   let latestAnswerEl: HTMLElement | null = null; // 最新的回答（唯一保持展开的消息）
+  const entryEls: HTMLElement[] = []; // 消息条目（FIFO；只保留最近 MAX_ENTRIES 条）
+  const MAX_ENTRIES = 6; // 只显示最近 3 轮对话（3 条用户输入 + 3 条回答）
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let workspaces: TaskWorkspaceItem[] = [];
   let sessions: TaskSessionItem[] = [];
@@ -419,7 +422,19 @@ export function mountTaskDialog(opts: {
     if (empty.parentNode === msgs) msgs.removeChild(empty);
   };
 
-  /** 追加一条消息（用户/回答）：collapsed=true 折叠成一行；点击整行切换折叠/展开 */
+  /** 内容增长后若对话框底部/右侧超出视口，向上/向左回夹——保证输入框永不被裁掉 */
+  const clampPosition = (): void => {
+    const r = root.getBoundingClientRect();
+    if (r.bottom > window.innerHeight - 4) {
+      root.style.top = Math.max(4, window.innerHeight - r.height - 4) + 'px';
+    }
+    if (r.right > window.innerWidth - 4) {
+      root.style.left = Math.max(4, window.innerWidth - r.width - 4) + 'px';
+    }
+  };
+
+  /** 追加一条消息（用户/回答）：collapsed=true 折叠成一行；点击整行切换折叠/展开。
+   *  只保留最近 3 轮（6 条）：超出时逐出最旧一条 */
   const appendEntry = (role: 'user' | 'assistant', text: string, collapsed: boolean): HTMLElement => {
     ensureArea();
     const el = document.createElement('div');
@@ -432,6 +447,15 @@ export function mountTaskDialog(opts: {
       el.title = now ? '点击展开' : '点击折叠';
     });
     msgs.appendChild(el);
+    entryEls.push(el);
+    while (entryEls.length > MAX_ENTRIES) {
+      const old = entryEls.shift();
+      if (old) {
+        if (old === latestAnswerEl) latestAnswerEl = null;
+        old.remove();
+      }
+    }
+    clampPosition();
     msgs.scrollTop = msgs.scrollHeight;
     return el;
   };
@@ -453,6 +477,7 @@ export function mountTaskDialog(opts: {
     placeholderEl.className = 'dsh-pet-task-msg dsh-pet-task-msg-running';
     placeholderEl.textContent = '正在努力工作...';
     msgs.appendChild(placeholderEl);
+    clampPosition();
     msgs.scrollTop = msgs.scrollHeight;
   };
 
@@ -560,6 +585,7 @@ export function mountTaskDialog(opts: {
     lastSeq = 0;
     placeholderEl = null;
     latestAnswerEl = null;
+    entryEls.length = 0;
     running = false;
     updateRunUi();
   };
@@ -602,15 +628,16 @@ export function mountTaskDialog(opts: {
   };
 
   // 同步某会话的历史对话面（切换/打开会话后）：全部折叠成一行，仅最新回答保持展开；
-  // 快照水位 seq 并入去重水位——历史已含的帧不再重复渲染
+  // 只取最近 3 轮（6 条）；快照水位 seq 并入去重水位——历史已含的帧不再重复渲染
   const loadHistory = (sessionId: string): Promise<void> => {
     return fetchTaskHistory(baseUrl, petId, sessionId)
       .then((h) => {
         if (closed || h.sessionId !== currentBoundSessionId) return;
         lastSeq = Math.max(lastSeq, h.lastSeq);
-        for (let i = 0; i < h.messages.length; i++) {
-          const m = h.messages[i];
-          const isLatest = i === h.messages.length - 1;
+        const recent = h.messages.slice(-MAX_ENTRIES);
+        for (let i = 0; i < recent.length; i++) {
+          const m = recent[i];
+          const isLatest = i === recent.length - 1;
           if (m.role === 'assistant') {
             collapseLatestAnswer();
             const el = appendEntry('assistant', m.text, !isLatest);
@@ -619,6 +646,7 @@ export function mountTaskDialog(opts: {
             appendEntry('user', m.text, true);
           }
         }
+        clampPosition();
       })
       .catch(() => {
         /* 历史读取失败静默：轮询帧继续渲染后续消息 */

@@ -83,7 +83,17 @@ function blocksToText(blocks: unknown): string {
       out += typeof o.text === 'string' ? o.text : String(o.text ?? '');
     }
   }
-  return out;
+  return stripInjectedBlocks(out);
+}
+
+/** 剥离注入的上下文块（<system-reminder>/<compacted-summary>/<context> 等标签段）——
+ *  这些是 DSH 塞进消息里的提示词/摘要，不是对话内容，不得进宠物气泡 */
+function stripInjectedBlocks(text: string): string {
+  return text
+    .replace(/<system-reminder[^>]*>[\s\S]*?<\/system-reminder>/g, '')
+    .replace(/<compacted-summary[^>]*>[\s\S]*?<\/compacted-summary>/g, '')
+    .replace(/<context[^>]*>[\s\S]*?<\/context>/g, '')
+    .trim();
 }
 
 /** session/event → 展示帧；不关心的事件返回 null。
