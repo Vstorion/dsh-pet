@@ -13,7 +13,7 @@
  * 自包含（不 import src/shared —— DSH 单文件加载约束）。
  */
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -51,6 +51,12 @@ function findCoatFile(name: string): string | undefined {
   return undefined;
 }
 
+/** 追加一行诊断日志到 <coat>/restart-update.log（失败静默——日志绝不阻断主流程） */
+function diagLog(coatDir: string, text: string): void {
+  const line = `[${new Date().toISOString()}] ${text}\n`;
+  void appendFile(join(coatDir, 'restart-update.log'), line, 'utf8').catch(() => undefined);
+}
+
 /** 创建更新桥：/update/status（读启动检测状态）+ /update/restart（拉起重启更新脚本） */
 export function createUpdateBridge(): UpdateBridge {
   const route = async (rest: string, method: string): Promise<UpdateRouteResult> => {
@@ -81,12 +87,16 @@ export function createUpdateBridge(): UpdateBridge {
       if (method !== 'POST') return json(405, { error: 'method not allowed' });
       const script = findCoatFile('restart-dsh-update.ps1');
       if (!script) {
+        const dir0 = coatDirCandidates()[0] ?? '';
+        diagLog(dir0, 'host: /update/restart - restart-dsh-update.ps1 NOT FOUND (coat candidates checked)');
         return json(500, {
           ok: false,
           message: 'restart-dsh-update.ps1 not found (expected in the harness coat folder)',
         });
       }
+      const coatDir = dirname(script);
       try {
+        diagLog(coatDir, `host: /update/restart - spawning powershell -File "${script}"`);
         // 直接 spawn powershell -File（-File 吞整行路径，空格安全；不经过 cmd start——
         // 实测 start 会弄坏带空格的引号参数，powershell 报错即退 = 用户看到的"黑框一闪"）。
         // 脚本首次运行检测到无 DSH_PET_UPDATE_CONSOLE 标记时会用 Start-Process
@@ -97,9 +107,14 @@ export function createUpdateBridge(): UpdateBridge {
           stdio: 'ignore',
           windowsHide: false,
         });
+        child.on('error', (e: Error) => {
+          diagLog(coatDir, `host: spawn ERROR: ${e.message}`);
+        });
         child.unref();
+        diagLog(coatDir, `host: spawn requested pid=${child.pid ?? 0}`);
         return json(200, { ok: true });
       } catch (e) {
+        diagLog(coatDir, `host: spawn threw: ${e instanceof Error ? e.message : String(e)}`);
         return json(500, { ok: false, message: e instanceof Error ? e.message : String(e) });
       }
     }
