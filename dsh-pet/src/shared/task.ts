@@ -321,7 +321,7 @@ export function mountTaskDialog(opts: {
   foot.className = 'dsh-pet-task-foot';
   const input = document.createElement('textarea');
   input.className = 'dsh-pet-task-input';
-  input.placeholder = '描述任务…（无长度限制）';
+  input.placeholder = '描述任务…';
   input.rows = 2;
   const errline = document.createElement('div');
   errline.className = 'dsh-pet-task-errline';
