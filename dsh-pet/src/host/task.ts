@@ -89,11 +89,20 @@ function blocksToText(blocks: unknown): string {
 /** 剥离注入的上下文块（<system-reminder>/<compacted-summary>/<context> 等标签段）——
  *  这些是 DSH 塞进消息里的提示词/摘要，不是对话内容，不得进宠物气泡 */
 function stripInjectedBlocks(text: string): string {
-  return text
+  const stripped = text
     .replace(/<system-reminder[^>]*>[\s\S]*?<\/system-reminder>/g, '')
     .replace(/<compacted-summary[^>]*>[\s\S]*?<\/compacted-summary>/g, '')
     .replace(/<context[^>]*>[\s\S]*?<\/context>/g, '')
+    // 上下文压缩检查点本身（compaction-basic 固定开场白）：压缩摘要不入气泡，
+    // 检查点整条消息剥离后为空 → 两端直接跳过该"用户消息"
+    .replace(/This is an automatically generated checkpoint[\s\S]*?without acknowledging this checkpoint\./g, '')
     .trim();
+  // 运行时上下文快照（"Current runtime context..." 开头的整条注入消息）：
+  // 元信息不是对话内容，整条丢弃（仅判前缀，误伤面最小）
+  if (/^Current runtime context\. This snapshot supersedes earlier runtime-context snapshots\./.test(stripped)) {
+    return '';
+  }
+  return stripped;
 }
 
 /** 提取 assistant/message 的文本：rc.6 形为 data.message.content（嵌套一层），
@@ -223,6 +232,8 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
 
   /** 运行时活动绑定（petId → 当前会话 id；驱动流式转发；进程内内存态） */
   const activeBindings = new Map<string, string>();
+  /** petId → 绑定会话所属工作区 id（/task/stream 回给客户端，跟随切换后同步选择器） */
+  const activeWorkspaces = new Map<string, string>();
   /** 会话 id → 绑定它的宠物集合（事件监听反查；由 activeBindings 重建） */
   let sessionToPets = new Map<string, Set<string>>();
   /** 本模块创建/恢复的 AgentHandle（插件卸载时统一 dispose） */
@@ -244,8 +255,9 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
     sessionToPets = next;
   };
 
-  const setActive = (petId: string, sessionId: string): void => {
+  const setActive = (petId: string, sessionId: string, workspaceId = ''): void => {
     activeBindings.set(petId, sessionId);
+    activeWorkspaces.set(petId, workspaceId);
     rebuildSessionMap();
   };
 
@@ -260,6 +272,34 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
       q.frames.unshift({ type: 'truncated', seq: dropped ? dropped.seq : frame.seq });
     }
     q.frames.push(frame);
+  };
+
+  /**
+   * Web 跟随：用户在任何会话里发消息（user/message）即视为一次主动切换——
+   * 'last' 策略（默认）的宠物重绑到该会话并粘性落盘，宠物任务框与 Web 正在进行的
+   * 对话实时同步（"自己不主动切换就一直在这个对话内"的切换信号扩展到 Web 侧）。
+   * 固定绑定（new / 指定会话）的宠物不跟随。先同步激活保证当轮事件即可转发，
+   * 工作区随后异步解析修正。
+   */
+  const followWeb = (sid: string): void => {
+    void (async () => {
+      try {
+        const petIds = Object.keys(readAllConfig());
+        for (const petId of petIds) {
+          if (petTaskConf(petId).session !== 'last') continue;
+          if (activeBindings.get(petId) === sid) continue;
+          const agent = ctx.agents.get(sid);
+          if (!agent) continue;
+          const cwd = String(agent?.session?.header?.cwd ?? '');
+          setActive(petId, sid, '');
+          const wid = cwd ? await resolveIdByPath(cwd) : '';
+          activeWorkspaces.set(petId, wid);
+          await writeState(petId, { workspaceId: wid, sessionId: sid });
+        }
+      } catch (e) {
+        console.warn('dsh-pet: 跟随 Web 会话失败：' + (e instanceof Error ? e.message : String(e)));
+      }
+    })();
   };
 
   // ---- 会话就位 ----
@@ -326,7 +366,7 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
         /* 附接失败不阻断：会话仍可用（不进工作区分组） */
       }
     }
-    setActive(petId, sessionId);
+    setActive(petId, sessionId, cwd ? workspaceId : '');
     await writeState(petId, {
       workspaceId: cwd ? workspaceId : '',
       sessionId: sticky ? sessionId : null,
@@ -341,13 +381,13 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
     if (binding.sessionId) {
       const live = ctx.agents.get(binding.sessionId);
       if (live) {
-        setActive(petId, binding.sessionId);
+        setActive(petId, binding.sessionId, binding.workspaceId);
         return { agent: live, sessionId: binding.sessionId };
       }
       try {
         const handle = await ctx.agents.resume({ resumeSessionId: binding.sessionId });
         handles.set(binding.sessionId, handle);
-        setActive(petId, binding.sessionId);
+        setActive(petId, binding.sessionId, binding.workspaceId);
         return { agent: handle.agent, sessionId: binding.sessionId };
       } catch (e) {
         console.warn(
@@ -379,9 +419,11 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
             (session as { id?: unknown; header?: { id?: unknown } } | null)?.header?.id ??
             '',
         );
-        if (!sessionToPets.has(sid)) return;
         const ev = (event ?? {}) as { type?: unknown; seq?: unknown; data?: Record<string, unknown> };
         const type = typeof ev.type === 'string' ? ev.type : '';
+        // Web 端用户发消息 = 隐式切换：'last' 策略宠物跟随（先激活再过滤，保证当轮事件即可转发）
+        if (sid && type === 'user/message') followWeb(sid);
+        if (!sessionToPets.has(sid)) return;
         const seq = Number(ev.seq);
         if (!Number.isFinite(seq) || seq <= 0) return;
         if (type === 'assistant/message') {
@@ -442,6 +484,8 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
     if (rest === 'task/current') {
       if (method !== 'GET') return json(405, { error: 'method not allowed' });
       const binding = await resolveBinding(petId);
+      // 打开即激活：粘性绑定进内存（事件转发靠它；与启动自愈同款，双保险）
+      if (binding.sessionId) setActive(petId, binding.sessionId, binding.workspaceId);
       let folder = '';
       const ws = wsRegistry();
       if (binding.workspaceId && ws) {
@@ -582,10 +626,10 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
             });
           }
         }
-        setActive(petId, bindSessionId);
         // 绑定既有会话：把该会话所属工作区一并粘性记住（保持"先工作区后对话"的导航一致）
         const cwd = String(agent?.session?.header?.cwd ?? '');
         const wid = await resolveIdByPath(cwd);
+        setActive(petId, bindSessionId, wid);
         await writeState(petId, { workspaceId: wid, sessionId: bindSessionId });
         return json(200, { ok: true, sessionId: bindSessionId, created: false });
       }
@@ -684,6 +728,7 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
     if (rest === 'task/stream') {
       if (method !== 'GET') return json(405, { error: 'method not allowed' });
       const sessionId = activeBindings.get(petId) ?? null;
+      const workspaceId = sessionId ? (activeWorkspaces.get(petId) ?? '') : '';
       const q = sessionId ? queues.get(sessionId) : undefined;
       let running = false;
       if (sessionId) {
@@ -692,7 +737,7 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
       }
       return json(
         200,
-        { ok: true, sessionId, running, events: q ? q.frames.slice() : [] },
+        { ok: true, sessionId, workspaceId, running, events: q ? q.frames.slice() : [] },
         { 'cache-control': 'no-cache, no-store' },
       );
     }
@@ -712,6 +757,27 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
     activeBindings.clear();
     queues.clear();
   };
+
+  /**
+   * 启动自愈：把各宠物落盘的粘性绑定激活进内存（activeBindings/sessionToPets）。
+   * 否则 DSH 重启后，要等首次派发任务才激活——期间 Web 端在绑定会话里的对话事件
+   * 不会被帧化转发，宠物任务框不更新（/task/stream 恒为 null）。仅激活不 resume：
+   * 展示事件随该会话被 Web 加载而自然到达，派发时 ensureSession 再按需恢复。
+   */
+  const activateStickyBindings = (): void => {
+    void (async () => {
+      try {
+        const petIds = Object.keys(readAllConfig());
+        for (const petId of petIds) {
+          const binding = await resolveBinding(petId);
+          if (binding.sessionId) setActive(petId, binding.sessionId, binding.workspaceId);
+        }
+      } catch (e) {
+        console.warn('dsh-pet: 粘性绑定激活失败：' + (e instanceof Error ? e.message : String(e)));
+      }
+    })();
+  };
+  activateStickyBindings();
 
   return { route, dispose };
 }

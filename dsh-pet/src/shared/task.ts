@@ -50,6 +50,8 @@ export interface TaskCurrentState {
 export interface TaskStreamState {
   ok: boolean;
   sessionId: string | null;
+  /** 绑定会话所属工作区 id（Web 跟随切换后同步工作区选择器） */
+  workspaceId: string;
   /** 绑定会话是否正在运行（Agent.status === 'running'；占位提示的权威来源） */
   running: boolean;
   events: TaskStreamFrame[];
@@ -205,6 +207,7 @@ export async function fetchTaskStream(baseUrl: string, petId: string): Promise<T
   return {
     ok: raw.ok === true,
     sessionId: typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : null,
+    workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : '',
     running: raw.running === true,
     events,
     message: typeof raw.message === 'string' ? raw.message : undefined,
@@ -736,9 +739,38 @@ export function mountTaskDialog(opts: {
     fetchTaskStream(baseUrl, petId)
       .then((state) => {
         if (closed || !state.ok) return;
+        // 绑定会话变了（用户在 Web 端换了对话 = 隐式切换）：完整重同步
+        // 工作区选择器 + 会话列表 + 消息区（历史快照覆盖本轮帧，直接返回）
         if (state.sessionId && state.sessionId !== currentBoundSessionId) {
           currentBoundSessionId = state.sessionId;
-          syncSelectToBound();
+          const wid = typeof state.workspaceId === 'string' ? state.workspaceId : currentWorkspaceId;
+          if (wid !== currentWorkspaceId) {
+            currentWorkspaceId = wid;
+            const hasOpt = Array.from(workspaceSelect.options).some((o) => o.value === wid);
+            if (hasOpt) {
+              workspaceSelect.value = wid;
+              refreshSessions().finally(() => syncSelectToBound());
+            } else {
+              fetchTaskWorkspaces(baseUrl, petId)
+                .then((items) => {
+                  if (closed) return;
+                  workspaces = items;
+                  rebuildWorkspaceSelect();
+                  if (!items.some((w) => w.workspaceId === wid)) currentWorkspaceId = '';
+                  workspaceSelect.value = currentWorkspaceId;
+                  return refreshSessions().finally(() => syncSelectToBound());
+                })
+                .catch(() => {
+                  /* 工作区列表失败：保留现有选项，仅同步会话选中 */
+                });
+            }
+          } else {
+            syncSelectToBound();
+          }
+          resetMessages();
+          applyRunning(state.running);
+          loadHistory(currentBoundSessionId);
+          return;
         }
         applyRunning(state.running);
         for (const frame of state.events) handleFrame(frame);
