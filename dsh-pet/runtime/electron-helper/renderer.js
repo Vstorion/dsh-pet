@@ -110,11 +110,46 @@ function injectAssets() {
   document.head.appendChild(menuStyle);
 }
 
-// 工作区尺寸由主进程注入并在进程生命周期内不变；窗口本身跟随宠物移动，
-// 这里仍兜底处理窗口内容区尺寸异常的情况（按当前窗口位置重新规整）。
-window.addEventListener('resize', () => {
-  for (const s of sprites) s.position();
-});
+// 任务对话窗模式：全屏透明窗只承载任务对话框（共享组件与浏览器/宠物窗内联版同一份）
+if (DIALOG) {
+  injectAssets();
+  const petId = DIALOG_PET;
+  const petName = DIALOG_PET_NAME;
+  const anchorX0 = Number(params.get('anchorX') || '0');
+  const anchorY0 = Number(params.get('anchorY') || '0');
+  const anchorWinX0 = Number(params.get('anchorWinX') || '0');
+  const anchorWinY0 = Number(params.get('anchorWinY') || '0');
+  // 屏幕坐标锚点（随宠物窗口位置变化而移动：窗口坐标变化量叠加到初始锚点）
+  let anchor = Number.isFinite(anchorX0) && Number.isFinite(anchorY0) ? { x: anchorX0, y: anchorY0 } : null;
+  window.petBridge.onPetBounds((b) => {
+    const winX = Number(b && b.winX);
+    const winY = Number(b && b.winY);
+    if (!anchor || !Number.isFinite(winX) || !Number.isFinite(winY)) return;
+    anchor = { x: anchorX0 + (winX - anchorWinX0), y: anchorY0 + (winY - anchorWinY0) };
+  });
+  // 屏幕坐标 → 本窗视口坐标（全屏窗内容区起点 = 主屏工作区原点）
+  const toViewport = (p) => ({ x: p.x - window.screenX, y: p.y - window.screenY });
+  const m = S.mountTaskDialog({
+    petId,
+    petName,
+    baseUrl: BASE,
+    x: anchor ? toViewport(anchor).x : 200,
+    y: anchor ? toViewport(anchor).y : 160,
+    anchor: anchor ? () => toViewport(anchor) : undefined,
+    onClose: () => {
+      window.petBridge.closeTaskDialog({ petId });
+    },
+  });
+  // 点击穿透翻转：光标悬停对话框 → 可交互（能点选/打字）；离开 → 全窗穿透（透明区域不挡下层应用）
+  m.el.addEventListener('mouseenter', () => window.petBridge.setInteractive(true));
+  m.el.addEventListener('mouseleave', () => window.petBridge.setInteractive(false));
+} else {
+  // 工作区尺寸由主进程注入并在进程生命周期内不变；窗口本身跟随宠物移动，
+  // 这里仍兜底处理窗口内容区尺寸异常的情况（按当前窗口位置重新规整）。
+  window.addEventListener('resize', () => {
+    for (const s of sprites) s.position();
+  });
 
-injectAssets();
-void boot();
+  injectAssets();
+  void boot();
+}

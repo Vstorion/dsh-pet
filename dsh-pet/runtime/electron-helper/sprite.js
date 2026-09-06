@@ -1007,10 +1007,21 @@ class PetSprite {
     this.setInteractive(true);
   }
 
-  // 「任务」菜单：任务对话窗（shared 组件，与浏览器同一份）——直接向 DSH 派发任务：
-  // 会话/文件夹粘性绑定（host task-state.json 落盘）、流式回复（500ms 轮询 /task/stream）、
-  // 可取消。窗口跟随宠物（基准同对话弹窗：身体命中区右上角），期间整窗保持可交互。
+  // 「任务」菜单：任务对话窗——优先经主进程开**独立全屏透明窗**（可全屏拖动 + 随宠物窗口跟随）；
+  // 主进程不支持时回落为窗口内嵌挂载（旧行为，拖动范围受宠物窗口限制）。
   showTaskFromMenu() {
+    const r = this.hit.getBoundingClientRect();
+    if (window.petBridge && window.petBridge.openTaskDialog) {
+      window.petBridge.openTaskDialog({
+        petId: this.pet.id,
+        petName: this.pet.name,
+        anchorX: window.screenX + r.right + 6,
+        anchorY: window.screenY + r.top + 6,
+        winX: window.screenX,
+        winY: window.screenY,
+      });
+      return;
+    }
     if (this.taskClose) {
       this.taskClose();
       this.taskClose = null;

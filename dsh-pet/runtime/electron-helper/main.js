@@ -61,6 +61,8 @@ if (BRIDGE) {
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
+/** 任务对话窗表：petId -> BrowserWindow（独立全屏透明窗，随宠物窗口跟随、可全屏拖动） */
+const taskWindows = new Map();
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
@@ -230,11 +232,17 @@ function showAllPetWindows() {
   for (const w of windowList()) {
     if (!w.isVisible()) w.showInactive(); // 不抢焦点：窗口平时整窗穿透，无需聚焦
   }
+  for (const w of taskWindows.values()) {
+    if (!w.isDestroyed() && !w.isVisible()) w.showInactive();
+  }
   rebuildTrayMenu();
 }
 function hideAllPetWindows() {
   for (const w of windowList()) {
     if (w.isVisible()) w.hide();
+  }
+  for (const w of taskWindows.values()) {
+    if (!w.isDestroyed() && w.isVisible()) w.hide();
   }
   ensureTray();
   rebuildTrayMenu();
@@ -405,6 +413,10 @@ app.whenReady().then(() => {
         vx: Number.isFinite(vx) ? vx : 0,
         vy: Number.isFinite(vy) ? vy : 0,
       });
+      // 广播宠物窗口位置给任务对话窗（跟随锚点：窗口坐标变化量叠加到初始锚点）
+      for (const tw of taskWindows.values()) {
+        if (!tw.isDestroyed()) tw.webContents.send('pet:pet-bounds', { petId, winX: x, winY: y });
+      }
     }
   });
 
@@ -443,6 +455,87 @@ app.whenReady().then(() => {
     if (!win || win.isDestroyed()) return;
     win.setIgnoreMouseEvents(!interactive, { forward: true });
     windowIgnore.set(win.id, !interactive);
+  });
+
+  // 打开任务对话窗：全屏透明独立窗口（对话框不再被宠物小窗裁剪，可全屏拖动）
+  ipcMain.on('pet:open-task-dialog', (event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const petId = String(p.petId || '');
+    const petName = String(p.petName || petId);
+    const anchorX = Number(p.anchorX);
+    const anchorY = Number(p.anchorY);
+    const anchorWinX = Number(p.winX);
+    const anchorWinY = Number(p.winY);
+    if (!petId || ![anchorX, anchorY, anchorWinX, anchorWinY].every(Number.isFinite)) return;
+    const existing = taskWindows.get(petId);
+    if (existing && !existing.isDestroyed()) {
+      existing.show();
+      existing.focus();
+      return;
+    }
+    const area = screen.getPrimaryDisplay().workArea;
+    const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
+    const win = new BrowserWindow({
+      x: area.x,
+      y: area.y,
+      width: area.width,
+      height: area.height,
+      show: false,
+      useContentSize: true,
+      transparent: true,
+      frame: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      hasShadow: false,
+      focusable: true, // 输入框需要焦点才能打字
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        spellcheck: false,
+      },
+    });
+    win.setAlwaysOnTop(true, 'floating');
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    win.webContents.setBackgroundThrottling(false);
+    win.webContents.on('context-menu', (event) => event.preventDefault());
+    // 默认整窗穿透：透明区域不挡下层应用；渲染端悬停对话框时经 pet:set-interactive 翻转
+    win.setIgnoreMouseEvents(true, { forward: true });
+    windowIgnore.set(win.id, true);
+    win.once('ready-to-show', () => win.show());
+    win.on('closed', () => taskWindows.delete(petId));
+    taskWindows.set(petId, win);
+    win
+      .loadFile('index.html', {
+        query: {
+          dialog: 'task',
+          pet: petId,
+          petName,
+          anchorX: String(anchorX),
+          anchorY: String(anchorY),
+          anchorWinX: String(anchorWinX),
+          anchorWinY: String(anchorWinY),
+          configUrl,
+          bridge: BRIDGE ? '1' : '0',
+          scale: '1',
+          petIndex: '0',
+          workAreaW: String(area.width),
+          workAreaH: String(area.height),
+        },
+      })
+      .catch((error) => {
+        console.error('[dsh-pet-desktop-helper] task dialog page load failed:', error);
+        win.destroy();
+      });
+  });
+
+  // 关闭任务对话窗（对话框点 × / Esc 时由对话窗渲染端发起）
+  ipcMain.on('pet:close-task-dialog', (event, payload) => {
+    const petId = String((payload && typeof payload === 'object' && payload.petId) || '');
+    const win = taskWindows.get(petId);
+    if (win && !win.isDestroyed()) win.destroy();
   });
 
   // 右键菜单「打开网站」：交给**系统默认浏览器**打开（等效于网页里 Ctrl+点击链接新标签页），

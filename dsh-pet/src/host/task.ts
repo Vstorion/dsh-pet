@@ -105,7 +105,7 @@ function assistantText(data: Record<string, unknown>): string {
 }
 
 /** session/event → 展示帧；不关心的事件返回 null。
- *  只保留最终输出帧（turn-start/user/assistant/turn-end/error）——
+ *  只处理 user/message 与 turn/start|end（assistant/message 由监听器按轮缓存，turn/end 时统一发出）——
  *  chunk 与工具调用属中间过程，两端均不展示，从源头省略（防长任务刷爆帧队列）。 */
 function eventToFrame(event: unknown): TaskFrame | null {
   const ev = (event ?? {}) as { type?: unknown; seq?: unknown; data?: Record<string, unknown> };
@@ -114,20 +114,11 @@ function eventToFrame(event: unknown): TaskFrame | null {
   if (!Number.isFinite(seq) || seq <= 0) return null;
   const d = (ev.data ?? {}) as Record<string, unknown>;
   switch (type) {
-    case 'turn/start':
-      return { type: 'turn-start', seq };
     case 'user/message': {
       const text = blocksToText(d.content);
       if (!text) return null;
       return { type: 'user', seq, text };
     }
-    case 'assistant/message': {
-      const text = assistantText(d);
-      if (!text) return null;
-      return { type: 'assistant', seq, text };
-    }
-    case 'turn/end':
-      return { type: 'turn-end', seq };
     default:
       return null;
   }
@@ -377,6 +368,9 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
   };
 
   // ---- 事件监听：绑定会话的展示事件 → 帧化入队（两端轮询排水） ----
+  // 「一轮」= 一次用户请求 + DSH 多步迭代后的最终回答：同轮内多次 assistant/message
+  // （中间输出）只保留最后一次，待 turn/end 时作为该轮最终回答一并发出
+  const pendingAssistant = new Map<string, { seq: number; text: string }>();
   ctx.effect(
     () =>
       ctx.on('session/event', (session: unknown, event: unknown) => {
@@ -386,6 +380,29 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
             '',
         );
         if (!sessionToPets.has(sid)) return;
+        const ev = (event ?? {}) as { type?: unknown; seq?: unknown; data?: Record<string, unknown> };
+        const type = typeof ev.type === 'string' ? ev.type : '';
+        const seq = Number(ev.seq);
+        if (!Number.isFinite(seq) || seq <= 0) return;
+        if (type === 'assistant/message') {
+          // 中间回答：缓存（同轮更晚的覆盖更早的），不立即入队
+          const text = assistantText((ev.data ?? {}) as Record<string, unknown>);
+          if (text) pendingAssistant.set(sid, { seq, text });
+          return;
+        }
+        if (type === 'turn/end') {
+          // 该轮最终回答 + 回合结束
+          const pending = pendingAssistant.get(sid);
+          pendingAssistant.delete(sid);
+          if (pending) pushFrame(sid, { type: 'assistant', seq: pending.seq, text: pending.text });
+          pushFrame(sid, { type: 'turn-end', seq });
+          return;
+        }
+        if (type === 'turn/start') {
+          pendingAssistant.delete(sid); // 新轮开始：清掉上一轮的残留（异常中断时）
+          pushFrame(sid, { type: 'turn-start', seq });
+          return;
+        }
         const frame = eventToFrame(event);
         if (!frame) return;
         pushFrame(sid, frame);
@@ -628,15 +645,30 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
           capturedThroughSeq?: number | null;
           events?: Array<{ type?: unknown; data?: Record<string, unknown> }>;
         };
-        const messages: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+        // 「一轮」= 一次用户请求 + DSH 多步迭代的最终回答：同轮内多次 assistant/message
+        // （中间输出）只保留最后一次总结
+        const rounds: Array<{ user: string; assistant: string | null }> = [];
+        let cur: { user: string; assistant: string | null } | null = null;
+        const flushRound = (): void => {
+          if (cur && (cur.user || cur.assistant)) rounds.push(cur);
+        };
         for (const ev of snap.events ?? []) {
           if (ev.type === 'user/message') {
             const text = blocksToText(ev.data?.content);
-            if (text) messages.push({ role: 'user', text });
+            if (!text) continue;
+            flushRound();
+            cur = { user: text, assistant: null };
           } else if (ev.type === 'assistant/message') {
+            if (!cur) continue;
             const text = assistantText(ev.data ?? {});
-            if (text) messages.push({ role: 'assistant', text });
+            if (text) cur.assistant = text; // 同轮更晚的输出覆盖更早的中间回答
           }
+        }
+        flushRound();
+        const messages: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+        for (const r of rounds) {
+          messages.push({ role: 'user', text: r.user });
+          if (r.assistant) messages.push({ role: 'assistant', text: r.assistant });
         }
         return json(200, {
           ok: true,

@@ -42,4 +42,17 @@ contextBridge.exposeInMainWorld('petBridge', {
   onPetHit(cb) {
     ipcRenderer.on('pet:hit', (e, payload) => cb(payload));
   },
+  // ---- 任务对话窗（独立全屏透明窗口；可全屏拖动 + 随宠物窗口跟随）----
+  // 打开：宠物窗口渲染端发来（含宠物锚点屏幕坐标与本窗屏幕坐标），主进程建全屏窗
+  openTaskDialog(payload) {
+    ipcRenderer.send('pet:open-task-dialog', payload);
+  },
+  // 关闭（对话框点 × / Esc 时由对话窗渲染端发起，主进程销毁本窗）
+  closeTaskDialog(payload) {
+    ipcRenderer.send('pet:close-task-dialog', payload);
+  },
+  // 订阅宠物窗口位置变化（主进程在 pet:set-bounds 时广播；对话窗据此更新跟随锚点）
+  onPetBounds(cb) {
+    ipcRenderer.on('pet:pet-bounds', (e, payload) => cb(payload));
+  },
 });
