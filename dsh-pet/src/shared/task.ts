@@ -214,7 +214,7 @@ export async function fetchTaskStream(baseUrl: string, petId: string): Promise<T
 /** 弹窗样式 —— 两端注入同一份（与 CHAT_CSS 同模式；视觉对齐浏览器/桌面）。
  *  窗口形态：标题栏 + 工作区/会话行 + 滚动消息区 + 底部输入。字体与气泡同款（上首软糖体）。 */
 export const TASK_CSS = [
-  '.dsh-pet-task{position:fixed;z-index:2147483002;width:340px;max-width:86vw;',
+  '.dsh-pet-task{position:fixed;z-index:2147483002;width:420px;max-width:86vw;',
   'background:rgba(255,255,255,.985);border:1px solid rgba(0,0,0,.14);border-radius:12px;',
   'box-shadow:0 12px 40px rgba(0,0,0,.26);color:#2b2b2b;font-size:13px;line-height:1.5;',
   "font-family:'ShangshouSoftCandy','Yuanti SC','YouYuan','幼圆','Comic Sans MS','PingFang SC','Microsoft YaHei',sans-serif;",
@@ -232,11 +232,18 @@ export const TASK_CSS = [
   '.dsh-pet-task-row button{flex:none;font-family:inherit;font-size:12px;color:#2b2b2b;',
   'border:1px solid rgba(0,0,0,.16);border-radius:6px;padding:3px 9px;background:#fff;cursor:pointer}',
   '.dsh-pet-task-row button:hover{background:rgba(0,0,0,.05)}',
-  '.dsh-pet-task-msgs{flex:1;min-height:120px;max-height:300px;overflow-y:auto;padding:8px 10px;',
+  '.dsh-pet-task-msgs{flex:1;min-height:180px;max-height:480px;overflow-y:auto;padding:8px 10px;',
   'user-select:text;display:flex;flex-direction:column;gap:6px}',
-  '.dsh-pet-task-msg{max-width:96%;padding:5px 9px;border-radius:9px;white-space:pre-wrap;',
-  'overflow-wrap:anywhere;font-size:13px;cursor:pointer}',
-  '.dsh-pet-task-msg.is-collapsed{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:1.6em}',
+  '.dsh-pet-task-msg{max-width:96%;padding:6px 10px;border-radius:9px;white-space:pre-wrap;',
+  'overflow-wrap:anywhere;font-size:14px;cursor:pointer}',
+  // 折叠态：一行省略号；展开态：内容超高时消息内部滚动（不把预览区撑爆）
+  '.dsh-pet-task-msg.is-collapsed{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:1.8em}',
+  '.dsh-pet-task-msg:not(.is-collapsed){max-height:260px;overflow-y:auto}',
+  // 折叠/展开指示符（仅对话消息；占位行不参与）
+  '.dsh-pet-task-msg-user.is-collapsed::before,.dsh-pet-task-msg-assistant.is-collapsed::before',
+  '{content:"▸ " ;color:rgba(43,43,43,.45)}',
+  '.dsh-pet-task-msg-user:not(.is-collapsed)::before,.dsh-pet-task-msg-assistant:not(.is-collapsed)::before',
+  '{content:"▾ " ;color:rgba(43,43,43,.45)}',
   '.dsh-pet-task-msg-user{align-self:flex-end;background:#e8f2ff;color:#1f3a5f}',
   '.dsh-pet-task-msg-assistant{align-self:flex-start;background:rgba(0,0,0,.055)}',
   '.dsh-pet-task-msg-running{align-self:flex-start;color:rgba(43,43,43,.78);font-size:13px;padding:5px 9px;cursor:default}',
