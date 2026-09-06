@@ -87,23 +87,16 @@ export function createUpdateBridge(): UpdateBridge {
         });
       }
       try {
-        // 独立控制台窗口（cmd start → powershell）：DSH 数秒后被脚本关闭时更新脚本不受牵连，
-        // 进度（git fetch/rebase 输出）显示在该 PowerShell 窗口
-        const child = spawn(
-          process.env.ComSpec ?? 'cmd.exe',
-          [
-            '/c',
-            'start',
-            '""',
-            'powershell.exe',
-            '-NoProfile',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-File',
-            '"' + script + '"',
-          ],
-          { detached: true, stdio: 'ignore', windowsHide: false },
-        );
+        // 直接 spawn powershell -File（-File 吞整行路径，空格安全；不经过 cmd start——
+        // 实测 start 会弄坏带空格的引号参数，powershell 报错即退 = 用户看到的"黑框一闪"）。
+        // 脚本首次运行检测到无 DSH_PET_UPDATE_CONSOLE 标记时会用 Start-Process
+        // 把自己重开进一个**可见的新控制台**（进度显示在那里），随即本进程退出——
+        // 因此 DSH 数秒后被脚本关闭时更新流程不受牵连。
+        const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: false,
+        });
         child.unref();
         return json(200, { ok: true });
       } catch (e) {
