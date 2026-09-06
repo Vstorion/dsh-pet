@@ -96,6 +96,14 @@ function stripInjectedBlocks(text: string): string {
     .trim();
 }
 
+/** 提取 assistant/message 的文本：rc.6 形为 data.message.content（嵌套一层），
+ *  旧版可能是 data.content——两者都认，防版本差异 */
+function assistantText(data: Record<string, unknown>): string {
+  const message =
+    data.message && typeof data.message === 'object' ? (data.message as Record<string, unknown>) : undefined;
+  return blocksToText(message?.content ?? data.content);
+}
+
 /** session/event → 展示帧；不关心的事件返回 null。
  *  只保留最终输出帧（turn-start/user/assistant/turn-end/error）——
  *  chunk 与工具调用属中间过程，两端均不展示，从源头省略（防长任务刷爆帧队列）。 */
@@ -114,7 +122,7 @@ function eventToFrame(event: unknown): TaskFrame | null {
       return { type: 'user', seq, text };
     }
     case 'assistant/message': {
-      const text = blocksToText(d.content);
+      const text = assistantText(d);
       if (!text) return null;
       return { type: 'assistant', seq, text };
     }
@@ -626,7 +634,7 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
             const text = blocksToText(ev.data?.content);
             if (text) messages.push({ role: 'user', text });
           } else if (ev.type === 'assistant/message') {
-            const text = blocksToText(ev.data?.content);
+            const text = assistantText(ev.data ?? {});
             if (text) messages.push({ role: 'assistant', text });
           }
         }

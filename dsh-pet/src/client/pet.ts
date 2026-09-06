@@ -1227,6 +1227,11 @@ export function makePetUI(rt: {
           baseUrl: '/dsh-pet-7340',
           x: hitRect2 ? hitRect2.right + 6 : window.innerWidth - 380,
           y: hitRect2 ? hitRect2.top + 6 : 8,
+          // 跟随锚点：窗口随宠物漫游/拖拽移动；拖动标题栏可单独调整相对位置，松手后按新偏移继续跟随
+          anchor: () => {
+            const r = stageRef.current?.querySelector('.dsh-pet-hit')?.getBoundingClientRect();
+            return r ? { x: r.right + 6, y: r.top + 6 } : null;
+          },
           onClose: () => {
             taskRef.current = null;
           },

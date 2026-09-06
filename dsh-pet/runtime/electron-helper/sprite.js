@@ -1022,6 +1022,12 @@ class PetSprite {
       baseUrl: BASE,
       x: Math.max(4, this.hit.getBoundingClientRect().right + 6),
       y: Math.max(4, this.hit.getBoundingClientRect().top + 6),
+      // 跟随锚点：窗口随宠物移动（桌面窗整体随宠移动，锚点保持相对稳定）；
+      // 拖动标题栏可单独调整窗口相对位置，松手后按新偏移继续跟随
+      anchor: () => {
+        const r = this.hit.getBoundingClientRect();
+        return { x: r.right + 6, y: r.top + 6 };
+      },
       onClose: () => {
         this.taskClose = null;
         this.taskOpen = false;

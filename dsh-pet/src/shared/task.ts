@@ -222,7 +222,7 @@ export const TASK_CSS = [
   'display:flex;flex-direction:column;user-select:none;overflow:hidden}',
   '.dsh-pet-task *{box-sizing:border-box}',
   '.dsh-pet-task-head{padding:8px 10px 6px;border-bottom:1px solid rgba(0,0,0,.08);flex:none}',
-  '.dsh-pet-task-title{display:flex;align-items:center;justify-content:space-between;',
+  '.dsh-pet-task-title{display:flex;align-items:center;justify-content:space-between;cursor:move;',
   'font-weight:700;font-size:14px;margin-bottom:6px}',
   '.dsh-pet-task-close{cursor:pointer;color:rgba(43,43,43,.5);font-size:15px;padding:0 2px;line-height:1}',
   '.dsh-pet-task-close:hover{color:#2b2b2b}',
@@ -294,6 +294,8 @@ export interface TaskDialogMount {
  * 挂载任务对话窗（两端共用；位置为视口坐标，超出视口自动夹回）。
  * 行为：打开即任务模式（P1 无模式切换）；工作区 → 会话两级选择，粘性绑定（host 落盘）；
  * 打开期间每 500ms 轮询 /task/stream 排水渲染；Esc 或点 × 关闭（不做点外关闭——窗口语义）。
+ * 跟随/拖动：提供 anchor（宠物身体锚点）时，窗口随宠物移动保持相对位置；
+ * 拖动标题栏可单独调整相对位置（之后继续跟随，保持新偏移）。
  */
 export function mountTaskDialog(opts: {
   petId: string;
@@ -303,12 +305,15 @@ export function mountTaskDialog(opts: {
   baseUrl?: string;
   x: number;
   y: number;
+  /** 宠物身体锚点（视口坐标）：提供则窗口随宠物移动；返回 null 表示宠物不可见（跳过本轮跟随） */
+  anchor?: () => { x: number; y: number } | null;
   onClose?: () => void;
 }): TaskDialogMount {
   injectTaskCss();
   const { petId, x, y, onClose } = opts;
   const baseUrl = opts.baseUrl ?? '/dsh-pet-7340';
   const title = opts.petName?.trim() || petId;
+  const anchorFn = opts.anchor;
 
   const root = document.createElement('div');
   root.className = 'dsh-pet-task';
@@ -393,6 +398,61 @@ export function mountTaskDialog(opts: {
   const rr = root.getBoundingClientRect();
   root.style.left = Math.max(4, Math.min(x, window.innerWidth - rr.width - 4)) + 'px';
   root.style.top = Math.max(4, Math.min(y, window.innerHeight - rr.height - 4)) + 'px';
+
+  // ---- 跟随 + 单独拖动 ----
+  // 相对宠物锚点的偏移（初始 = 打开时传入位置与锚点的差；拖动标题栏后更新）
+  let anchorOffset = { dx: 6, dy: 6 };
+  if (anchorFn) {
+    const a0 = anchorFn();
+    if (a0) anchorOffset = { dx: x - a0.x, dy: y - a0.y };
+  }
+  let dragging = false;
+  let followTimer: ReturnType<typeof setInterval> | null = null;
+
+  const applyPos = (left: number, top: number): void => {
+    root.style.left = left + 'px';
+    root.style.top = top + 'px';
+  };
+
+  // 跟随：宠物锚点 + 当前偏移（200ms 轻轮询；拖动期间暂停，避免打架）
+  if (anchorFn) {
+    followTimer = setInterval(() => {
+      if (closed || dragging) return;
+      const a = anchorFn();
+      if (!a) return;
+      const r = root.getBoundingClientRect();
+      applyPos(
+        Math.max(4, Math.min(a.x + anchorOffset.dx, window.innerWidth - r.width - 4)),
+        Math.max(4, Math.min(a.y + anchorOffset.dy, window.innerHeight - r.height - 4)),
+      );
+    }, 200);
+  }
+
+  // 拖动标题栏：整体移动窗口；松手后按当前锚点重算偏移，之后继续跟随
+  titleRow.addEventListener('pointerdown', (e) => {
+    if (closed || (e.target as HTMLElement) === closeBtn) return;
+    dragging = true;
+    titleRow.setPointerCapture(e.pointerId);
+  });
+  titleRow.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const r = root.getBoundingClientRect();
+    applyPos(r.left + e.movementX, r.top + e.movementY);
+    clampPosition();
+  });
+  const endDrag = (): void => {
+    if (!dragging) return;
+    dragging = false;
+    if (anchorFn) {
+      const a = anchorFn();
+      if (a) {
+        const r = root.getBoundingClientRect();
+        anchorOffset = { dx: r.left - a.x, dy: r.top - a.y };
+      }
+    }
+  };
+  titleRow.addEventListener('pointerup', endDrag);
+  titleRow.addEventListener('pointercancel', endDrag);
 
   // ---- 渲染状态 ----
   let closed = false;
@@ -770,6 +830,10 @@ export function mountTaskDialog(opts: {
     if (pollTimer !== null) {
       clearInterval(pollTimer);
       pollTimer = null;
+    }
+    if (followTimer !== null) {
+      clearInterval(followTimer);
+      followTimer = null;
     }
     document.removeEventListener('keydown', onDocKeyDown, true);
     root.remove();
