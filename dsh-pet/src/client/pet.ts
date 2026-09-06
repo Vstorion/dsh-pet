@@ -1232,6 +1232,11 @@ export function makePetUI(rt: {
             const r = stageRef.current?.querySelector('.dsh-pet-hit')?.getBoundingClientRect();
             return r ? { x: r.right + 6, y: r.top + 6 } : null;
           },
+          // 「查看历史」：新标签打开 DSH Web，带 petTaskSession 深链参数（本插件启动时自动选中该会话）
+          openHistory: (sessionId) => {
+            const url = window.location.origin + '/?petTaskSession=' + (sessionId ? encodeURIComponent(sessionId) : '');
+            window.open(url, '_blank', 'noopener');
+          },
           onClose: () => {
             taskRef.current = null;
           },
@@ -1322,6 +1327,33 @@ export function makePetUI(rt: {
         height: ((HIT_BOX.y1 - HIT_BOX.y0) / 360) * 100 + '%',
       },
       onClick: handleClick,
+      // 双击人物：任务对话框开/关切换（未开 → 打开；已开 → 关闭）
+      onDoubleClick: () => {
+        if (taskRef.current) {
+          taskRef.current.close();
+          taskRef.current = null;
+          return;
+        }
+        const r = stageRef.current?.querySelector('.dsh-pet-hit')?.getBoundingClientRect();
+        taskRef.current = mountTaskDialog({
+          petId: cfg.id,
+          petName: cfg.name,
+          baseUrl: '/dsh-pet-7340',
+          x: r ? r.right + 6 : window.innerWidth - 380,
+          y: r ? r.top + 6 : 8,
+          anchor: () => {
+            const rr = stageRef.current?.querySelector('.dsh-pet-hit')?.getBoundingClientRect();
+            return rr ? { x: rr.right + 6, y: rr.top + 6 } : null;
+          },
+          openHistory: (sessionId) => {
+            const url = window.location.origin + '/?petTaskSession=' + (sessionId ? encodeURIComponent(sessionId) : '');
+            window.open(url, '_blank', 'noopener');
+          },
+          onClose: () => {
+            taskRef.current = null;
+          },
+        });
+      },
       onPointerDown: handlePointerDown,
       onPointerMove: handlePointerMove,
       onPointerUp: handlePointerUp,

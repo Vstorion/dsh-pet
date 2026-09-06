@@ -224,6 +224,11 @@ export const TASK_CSS = [
   '.dsh-pet-task-head{padding:8px 10px 6px;border-bottom:1px solid rgba(0,0,0,.08);flex:none}',
   '.dsh-pet-task-title{display:flex;align-items:center;justify-content:space-between;cursor:move;',
   'font-weight:700;font-size:14px;margin-bottom:6px}',
+  '.dsh-pet-task-titlebtns{display:flex;align-items:center;gap:6px;flex:none}',
+  '.dsh-pet-task-headbtn{cursor:pointer;font-size:11px;font-weight:400;color:#4a7fc1;',
+  'padding:1px 7px;border:1px solid rgba(74,127,193,.45);border-radius:5px;line-height:1.5;white-space:nowrap}',
+  '.dsh-pet-task-headbtn:hover{background:rgba(74,127,193,.08)}',
+  '.dsh-pet-task-selects{padding:1px 0 0}',
   '.dsh-pet-task-close{cursor:pointer;color:rgba(43,43,43,.5);font-size:15px;padding:0 2px;line-height:1}',
   '.dsh-pet-task-close:hover{color:#2b2b2b}',
   '.dsh-pet-task-row{display:flex;align-items:center;gap:5px;margin-top:4px}',
@@ -307,6 +312,8 @@ export function mountTaskDialog(opts: {
   y: number;
   /** 宠物身体锚点（视口坐标）：提供则窗口随宠物移动；返回 null 表示宠物不可见（跳过本轮跟随） */
   anchor?: () => { x: number; y: number } | null;
+  /** 「查看历史」：在 DSH Web 打开当前会话对话页（由调用方实现：桌面开系统浏览器 / 浏览器端开新标签） */
+  openHistory?: (sessionId: string | null) => void;
   onClose?: () => void;
 }): TaskDialogMount {
   injectTaskCss();
@@ -314,6 +321,7 @@ export function mountTaskDialog(opts: {
   const baseUrl = opts.baseUrl ?? '/dsh-pet-7340';
   const title = opts.petName?.trim() || petId;
   const anchorFn = opts.anchor;
+  const openHistory = opts.openHistory;
 
   const root = document.createElement('div');
   root.className = 'dsh-pet-task';
@@ -329,9 +337,27 @@ export function mountTaskDialog(opts: {
   closeBtn.className = 'dsh-pet-task-close';
   closeBtn.textContent = '×';
   closeBtn.title = '关闭（Esc）';
+  const titleBtns = document.createElement('span');
+  titleBtns.className = 'dsh-pet-task-titlebtns';
+  const historyBtn = document.createElement('span');
+  historyBtn.className = 'dsh-pet-task-headbtn';
+  historyBtn.textContent = '查看历史';
+  historyBtn.title = '在 DSH Web 中打开当前会话的对话页';
+  const selToggleBtn = document.createElement('span');
+  selToggleBtn.className = 'dsh-pet-task-headbtn';
+  selToggleBtn.textContent = '选择 ▸';
+  selToggleBtn.title = '展开/折叠工作区与会话选择';
+  titleBtns.appendChild(historyBtn);
+  titleBtns.appendChild(selToggleBtn);
+  titleBtns.appendChild(closeBtn);
   titleRow.appendChild(titleText);
-  titleRow.appendChild(closeBtn);
+  titleRow.appendChild(titleBtns);
   head.appendChild(titleRow);
+
+  // 工作区/会话选择区（默认折叠：点击标题栏「选择 ▸」展开/收起）
+  const selectsWrap = document.createElement('div');
+  selectsWrap.className = 'dsh-pet-task-selects';
+  selectsWrap.style.display = 'none';
 
   // 工作区行：先选工作区（同步 Web 已有工作区；'' = 默认工作目录/未分组）
   const workspaceRow = document.createElement('div');
@@ -342,7 +368,7 @@ export function mountTaskDialog(opts: {
   workspaceSelect.title = '先选工作区，再选其中的对话';
   workspaceRow.appendChild(workspaceLabel);
   workspaceRow.appendChild(workspaceSelect);
-  head.appendChild(workspaceRow);
+  selectsWrap.appendChild(workspaceRow);
 
   // 会话行：该工作区内的对话（含「＋ 新建对话」）
   const sessionRow = document.createElement('div');
@@ -356,7 +382,8 @@ export function mountTaskDialog(opts: {
   sessionSelect.appendChild(newSessionOpt);
   sessionRow.appendChild(sessionLabel);
   sessionRow.appendChild(sessionSelect);
-  head.appendChild(sessionRow);
+  selectsWrap.appendChild(sessionRow);
+  head.appendChild(selectsWrap);
 
   // ---- 消息区 ----
   const msgs = document.createElement('div');
@@ -430,7 +457,8 @@ export function mountTaskDialog(opts: {
 
   // 拖动标题栏：整体移动窗口；松手后按当前锚点重算偏移，之后继续跟随
   titleRow.addEventListener('pointerdown', (e) => {
-    if (closed || (e.target as HTMLElement) === closeBtn) return;
+    const t = e.target as HTMLElement;
+    if (closed || t === closeBtn || t === historyBtn || t === selToggleBtn) return;
     dragging = true;
     titleRow.setPointerCapture(e.pointerId);
   });
@@ -461,8 +489,8 @@ export function mountTaskDialog(opts: {
   let lastSeq = 0; // 帧去重水位（event.seq 单调；<= 已处理）
   let placeholderEl: HTMLElement | null = null; // 「正在努力工作...」占位行
   let latestAnswerEl: HTMLElement | null = null; // 最新的回答（唯一保持展开的消息）
-  const entryEls: HTMLElement[] = []; // 消息条目（FIFO；只保留最近 MAX_ENTRIES 条）
-  const MAX_ENTRIES = 6; // 只显示最近 3 轮对话（3 条用户输入 + 3 条回答）
+  const entryEls: Array<{ el: HTMLElement; role: 'user' | 'assistant' }> = []; // 消息条目（FIFO）
+  const MAX_OUTPUTS = 10; // 单轮显示：只保留当前轮输入 + 最近 10 条历史输出（全部折叠）
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let workspaces: TaskWorkspaceItem[] = [];
   let sessions: TaskSessionItem[] = [];
@@ -494,9 +522,23 @@ export function mountTaskDialog(opts: {
   };
 
   /** 追加一条消息（用户/回答）：collapsed=true 折叠成一行；点击整行切换折叠/展开。
-   *  只保留最近 3 轮（6 条）：超出时逐出最旧一条 */
+   *  单轮显示：新用户输入出现时，上一轮输入消失、上一轮输出折叠；
+   *  历史输出只保留最近 MAX_OUTPUTS 条（全部折叠），最新回答保持展开。 */
   const appendEntry = (role: 'user' | 'assistant', text: string, collapsed: boolean): HTMLElement => {
     ensureArea();
+    if (role === 'user') {
+      // 新一轮输入：上一轮输入消失，上一轮输出折叠
+      collapseLatestAnswer();
+      for (const e of entryEls.slice()) {
+        if (e.role === 'user') {
+          e.el.remove();
+          const i = entryEls.indexOf(e);
+          if (i >= 0) entryEls.splice(i, 1);
+        }
+      }
+    } else {
+      collapseLatestAnswer(); // 新回答出现：上一个展开的回答折叠
+    }
     const el = document.createElement('div');
     el.className = 'dsh-pet-task-msg ' + (role === 'user' ? 'dsh-pet-task-msg-user' : 'dsh-pet-task-msg-assistant');
     el.textContent = text;
@@ -507,13 +549,16 @@ export function mountTaskDialog(opts: {
       el.title = now ? '点击展开' : '点击折叠';
     });
     msgs.appendChild(el);
-    entryEls.push(el);
-    while (entryEls.length > MAX_ENTRIES) {
-      const old = entryEls.shift();
-      if (old) {
-        if (old === latestAnswerEl) latestAnswerEl = null;
-        old.remove();
-      }
+    entryEls.push({ el, role });
+    if (role === 'assistant' && !collapsed) latestAnswerEl = el;
+    // 历史输出上限：只保留最近 MAX_OUTPUTS 条输出（最旧的逐出）
+    const outs = entryEls.filter((e) => e.role === 'assistant');
+    while (outs.length > MAX_OUTPUTS) {
+      const old = outs.shift();
+      if (!old) break;
+      const i = entryEls.indexOf(old);
+      if (i >= 0) entryEls.splice(i, 1);
+      old.el.remove();
     }
     clampPosition();
     msgs.scrollTop = msgs.scrollHeight;
@@ -571,10 +616,9 @@ export function mountTaskDialog(opts: {
       case 'chunk':
         break; // 中间过程省略：不渲染流式碎块
       case 'assistant': {
-        // 最终回答：替换占位行，成为唯一展开的最新回答
+        // 最终回答：替换占位行，成为唯一展开的最新回答（appendEntry 内部折叠旧回答）
         removePlaceholder();
-        collapseLatestAnswer();
-        latestAnswerEl = appendEntry('assistant', frame.text, false);
+        appendEntry('assistant', frame.text, false);
         break;
       }
       case 'tool-call':
@@ -585,10 +629,8 @@ export function mountTaskDialog(opts: {
         break;
       case 'error': {
         applyRunning(false);
-        collapseLatestAnswer();
         const el = appendEntry('assistant', '任务出错：' + frame.message, false);
         el.classList.add('dsh-pet-task-msg-err');
-        latestAnswerEl = el;
         break;
       }
       case 'truncated':
@@ -687,24 +729,33 @@ export function mountTaskDialog(opts: {
       });
   };
 
-  // 同步某会话的历史对话面（切换/打开会话后）：全部折叠成一行，仅最新回答保持展开；
-  // 只取最近 3 轮（6 条）；快照水位 seq 并入去重水位——历史已含的帧不再重复渲染
+  // 同步某会话的历史对话面（切换/打开会话后）：单轮显示——当前轮输入 + 历史输出折叠、最新回答展开；
+  // 快照水位 seq 并入去重水位——历史已含的帧不再重复渲染
   const loadHistory = (sessionId: string): Promise<void> => {
     return fetchTaskHistory(baseUrl, petId, sessionId)
       .then((h) => {
         if (closed || h.sessionId !== currentBoundSessionId) return;
         lastSeq = Math.max(lastSeq, h.lastSeq);
-        const recent = h.messages.slice(-MAX_ENTRIES);
-        for (let i = 0; i < recent.length; i++) {
-          const m = recent[i];
-          const isLatest = i === recent.length - 1;
-          if (m.role === 'assistant') {
-            collapseLatestAnswer();
-            const el = appendEntry('assistant', m.text, !isLatest);
-            if (isLatest) latestAnswerEl = el;
-          } else {
-            appendEntry('user', m.text, true);
+        // 单轮显示：只保留当前轮输入 + 历史输出（折叠）。历史消息按轮组织（user→assistant 交替）：
+        // 定位最后一条用户输入 = 当前轮起点；之前的轮只渲染输出，当前轮渲染输入 + 输出。
+        const msgsList = h.messages;
+        let lastUserIdx = -1;
+        for (let i = msgsList.length - 1; i >= 0; i--) {
+          if (msgsList[i].role === 'user') {
+            lastUserIdx = i;
+            break;
           }
+        }
+        if (lastUserIdx > 0) {
+          for (let i = 0; i < lastUserIdx; i++) {
+            if (msgsList[i].role === 'assistant') appendEntry('assistant', msgsList[i].text, true);
+          }
+        }
+        const from = lastUserIdx >= 0 ? lastUserIdx : 0;
+        for (let i = from; i < msgsList.length; i++) {
+          const m = msgsList[i];
+          if (m.role === 'user') appendEntry('user', m.text, true);
+          else appendEntry('assistant', m.text, i !== msgsList.length - 1);
         }
         clampPosition();
       })
@@ -799,6 +850,16 @@ export function mountTaskDialog(opts: {
 
   // ---- 事件绑定 ----
   closeBtn.addEventListener('click', close);
+  // 「选择 ▸/▾」：展开/折叠工作区与会话选择区（默认折叠，保持窗口紧凑）
+  selToggleBtn.addEventListener('click', () => {
+    const hidden = selectsWrap.style.display === 'none';
+    selectsWrap.style.display = hidden ? 'block' : 'none';
+    selToggleBtn.textContent = hidden ? '选择 ▾' : '选择 ▸';
+  });
+  // 「查看历史」：在 DSH Web 打开当前绑定会话的对话页（无绑定时打开 Web 首页）
+  historyBtn.addEventListener('click', () => {
+    if (openHistory) openHistory(currentBoundSessionId);
+  });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

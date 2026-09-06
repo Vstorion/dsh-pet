@@ -154,6 +154,15 @@ class PetSprite {
     this.hit.addEventListener('pointerdown', (e) => this.onPointerDown(e), { signal: ac.signal });
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
     this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
+    // 双击人物：任务对话框开/关切换（未开 → 打开；已开 → 关闭）
+    this.hit.addEventListener(
+      'dblclick',
+      (e) => {
+        e.preventDefault();
+        this.toggleTaskDialog();
+      },
+      { signal: ac.signal },
+    );
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -1007,6 +1016,29 @@ class PetSprite {
     this.setInteractive(true);
   }
 
+  // 双击人物：任务对话框开/关切换（主进程 toggle 语义：已开 → 关闭；未开 → 打开）
+  toggleTaskDialog() {
+    const r = this.hit.getBoundingClientRect();
+    if (window.petBridge && window.petBridge.toggleTaskDialog) {
+      window.petBridge.toggleTaskDialog({
+        petId: this.pet.id,
+        petName: this.pet.name,
+        anchorX: window.screenX + r.right + 6,
+        anchorY: window.screenY + r.top + 6,
+        winX: window.screenX,
+        winY: window.screenY,
+      });
+      return;
+    }
+    // 回退：窗口内嵌弹窗的开/关
+    if (this.taskClose) {
+      this.taskClose();
+      this.taskClose = null;
+    } else {
+      this.showTaskFromMenu();
+    }
+  }
+
   // 「任务」菜单：任务对话窗——优先经主进程开**独立全屏透明窗**（可全屏拖动 + 随宠物窗口跟随）；
   // 主进程不支持时回落为窗口内嵌挂载（旧行为，拖动范围受宠物窗口限制）。
   showTaskFromMenu() {
@@ -1038,6 +1070,11 @@ class PetSprite {
       anchor: () => {
         const r = this.hit.getBoundingClientRect();
         return { x: r.right + 6, y: r.top + 6 };
+      },
+      // 「查看历史」：系统默认浏览器打开 DSH Web，带 petTaskSession 深链参数（浏览器端宠物插件自动选中该会话）
+      openHistory: (sessionId) => {
+        const url = ORIGIN + '/?petTaskSession=' + (sessionId ? encodeURIComponent(sessionId) : '');
+        if (window.petBridge) window.petBridge.openDshSite(url);
       },
       onClose: () => {
         this.taskClose = null;

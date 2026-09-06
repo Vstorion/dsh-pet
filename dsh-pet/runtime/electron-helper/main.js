@@ -458,7 +458,7 @@ app.whenReady().then(() => {
   });
 
   // 打开任务对话窗：全屏透明独立窗口（对话框不再被宠物小窗裁剪，可全屏拖动）
-  ipcMain.on('pet:open-task-dialog', (event, payload) => {
+  function openTaskDialogWindow(payload) {
     const p = payload && typeof payload === 'object' ? payload : {};
     const petId = String(p.petId || '');
     const petName = String(p.petName || petId);
@@ -467,12 +467,6 @@ app.whenReady().then(() => {
     const anchorWinX = Number(p.winX);
     const anchorWinY = Number(p.winY);
     if (!petId || ![anchorX, anchorY, anchorWinX, anchorWinY].every(Number.isFinite)) return;
-    const existing = taskWindows.get(petId);
-    if (existing && !existing.isDestroyed()) {
-      existing.show();
-      existing.focus();
-      return;
-    }
     const area = screen.getPrimaryDisplay().workArea;
     const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
     const win = new BrowserWindow({
@@ -529,6 +523,28 @@ app.whenReady().then(() => {
         console.error('[dsh-pet-desktop-helper] task dialog page load failed:', error);
         win.destroy();
       });
+  }
+
+  ipcMain.on('pet:open-task-dialog', (event, payload) => {
+    const petId = String((payload && typeof payload === 'object' && payload.petId) || '');
+    const existing = petId && taskWindows.get(petId);
+    if (existing && !existing.isDestroyed()) {
+      existing.show();
+      existing.focus();
+      return;
+    }
+    openTaskDialogWindow(payload);
+  });
+
+  // 双击人物：任务对话框开/关切换（已开 → 关闭；未开 → 打开）
+  ipcMain.on('pet:toggle-task-dialog', (event, payload) => {
+    const petId = String((payload && typeof payload === 'object' && payload.petId) || '');
+    const existing = petId && taskWindows.get(petId);
+    if (existing && !existing.isDestroyed()) {
+      existing.destroy();
+      return;
+    }
+    openTaskDialogWindow(payload);
   });
 
   // 关闭任务对话窗（对话框点 × / Esc 时由对话窗渲染端发起）

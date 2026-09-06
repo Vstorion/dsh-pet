@@ -136,6 +136,11 @@ if (DIALOG) {
     x: anchor ? toViewport(anchor).x : 200,
     y: anchor ? toViewport(anchor).y : 160,
     anchor: anchor ? () => toViewport(anchor) : undefined,
+    // 「查看历史」：系统默认浏览器打开 DSH Web，带 petTaskSession 深链参数（浏览器端宠物插件自动选中该会话）
+    openHistory: (sessionId) => {
+      const url = ORIGIN + '/?petTaskSession=' + (sessionId ? encodeURIComponent(sessionId) : '');
+      window.petBridge.openDshSite(url);
+    },
     onClose: () => {
       window.petBridge.closeTaskDialog({ petId });
     },

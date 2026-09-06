@@ -47,6 +47,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   openTaskDialog(payload) {
     ipcRenderer.send('pet:open-task-dialog', payload);
   },
+  // 双击人物开/关切换：已开 → 关闭；未开 → 打开
+  toggleTaskDialog(payload) {
+    ipcRenderer.send('pet:toggle-task-dialog', payload);
+  },
   // 关闭（对话框点 × / Esc 时由对话窗渲染端发起，主进程销毁本窗）
   closeTaskDialog(payload) {
     ipcRenderer.send('pet:close-task-dialog', payload);

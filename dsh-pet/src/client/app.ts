@@ -77,6 +77,35 @@ export function makeFactory(): (require: (mod: string) => any) => any {
         yield ctx.slots.register({ name: 'shell.overlay', id: 'pet', order: 1000 }, () => h(PetMulti, {}));
       });
 
+      // 深链：「查看历史」按钮以 ?petTaskSession=<id> 打开本页 → 自动选中该会话（会话列表就绪后 open，
+      // 列表加载稍慢时重试；成功后清掉参数防刷新重复触发）
+      ctx.effect(() => {
+        try {
+          const sid = new URLSearchParams(window.location.search).get('petTaskSession');
+          if (!sid) return () => {};
+          let attempts = 0;
+          const tryOpen = (): void => {
+            attempts += 1;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- sessions 为 DSH 运行时服务，无静态类型
+            const sessions = (ctx as any).get?.('sessions');
+            if (sessions && typeof sessions.open === 'function') {
+              try {
+                sessions.open(sid);
+                history.replaceState(null, '', window.location.pathname + window.location.hash);
+                return;
+              } catch {
+                /* 会话尚未出现在列表：稍后重试 */
+              }
+            }
+            if (attempts < 30) setTimeout(tryOpen, 800);
+          };
+          tryOpen();
+        } catch {
+          /* 深链失败静默：页面照常可用 */
+        }
+        return () => {};
+      }, 'dsh-pet: petTaskSession deep link');
+
       // 设置页：「桌宠配置」（大小/位置，保存即时生效）
       const PetConfigSection = makePetConfigSection({ h, useState, useEffect, t });
       ctx.slots.inject('settings.section', function* () {
