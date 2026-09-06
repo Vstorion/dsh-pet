@@ -488,9 +488,10 @@ export function mountTaskDialog(opts: {
   let running = false;
   let lastSeq = 0; // 帧去重水位（event.seq 单调；<= 已处理）
   let placeholderEl: HTMLElement | null = null; // 「正在努力工作...」占位行
-  let latestAnswerEl: HTMLElement | null = null; // 最新的回答（唯一保持展开的消息）
-  const entryEls: Array<{ el: HTMLElement; role: 'user' | 'assistant' }> = []; // 消息条目（FIFO）
-  const MAX_OUTPUTS = 10; // 单轮显示：只保留当前轮输入 + 最近 10 条历史输出（全部折叠）
+  let currentOutputEl: HTMLElement | null = null; // 当前展开的输出条目（无用户打断期间连续合并）
+  let queuedInputPending = false; // 新命令已排队、旧回合最终回答尚未落地（防轮次错位）
+  const entryEls: Array<{ el: HTMLElement; role: 'user' | 'assistant' }> = []; // 消息行（FIFO）
+  const MAX_OUTPUTS = 10; // 单轮显示：最多一条用户输入 + 一条输出；历史输出折叠保留最近 10 条
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let workspaces: TaskWorkspaceItem[] = [];
   let sessions: TaskSessionItem[] = [];
@@ -521,24 +522,11 @@ export function mountTaskDialog(opts: {
     }
   };
 
-  /** 追加一条消息（用户/回答）：collapsed=true 折叠成一行；点击整行切换折叠/展开。
-   *  单轮显示：新用户输入出现时，上一轮输入消失、上一轮输出折叠；
-   *  历史输出只保留最近 MAX_OUTPUTS 条（全部折叠），最新回答保持展开。 */
-  const appendEntry = (role: 'user' | 'assistant', text: string, collapsed: boolean): HTMLElement => {
+  /** 追加一条消息行（用户/回答）：collapsed=true 折叠成一行；点击整行切换折叠/展开。
+   *  纯行操作（不折叠当前输出、不维护 currentOutputEl——那些由调用方按轮次语义处理）；
+   *  历史输出只保留最近 MAX_OUTPUTS 条（最旧的逐出）。 */
+  const appendLine = (role: 'user' | 'assistant', text: string, collapsed: boolean): HTMLElement => {
     ensureArea();
-    if (role === 'user') {
-      // 新一轮输入：上一轮输入消失，上一轮输出折叠
-      collapseLatestAnswer();
-      for (const e of entryEls.slice()) {
-        if (e.role === 'user') {
-          e.el.remove();
-          const i = entryEls.indexOf(e);
-          if (i >= 0) entryEls.splice(i, 1);
-        }
-      }
-    } else {
-      collapseLatestAnswer(); // 新回答出现：上一个展开的回答折叠
-    }
     const el = document.createElement('div');
     el.className = 'dsh-pet-task-msg ' + (role === 'user' ? 'dsh-pet-task-msg-user' : 'dsh-pet-task-msg-assistant');
     el.textContent = text;
@@ -550,7 +538,6 @@ export function mountTaskDialog(opts: {
     });
     msgs.appendChild(el);
     entryEls.push({ el, role });
-    if (role === 'assistant' && !collapsed) latestAnswerEl = el;
     // 历史输出上限：只保留最近 MAX_OUTPUTS 条输出（最旧的逐出）
     const outs = entryEls.filter((e) => e.role === 'assistant');
     while (outs.length > MAX_OUTPUTS) {
@@ -565,13 +552,43 @@ export function mountTaskDialog(opts: {
     return el;
   };
 
-  /** 新回答出现时：把上一个展开的回答折叠（除最新回答外全部一行） */
-  const collapseLatestAnswer = (): void => {
-    if (latestAnswerEl) {
-      latestAnswerEl.classList.add('is-collapsed');
-      latestAnswerEl.title = '点击展开';
-      latestAnswerEl = null;
+  /** 折叠当前展开的输出（有内容时）：成为一行历史 */
+  const foldCurrentOutput = (): void => {
+    if (currentOutputEl) {
+      currentOutputEl.classList.add('is-collapsed');
+      currentOutputEl.title = '点击展开';
+      currentOutputEl = null;
     }
+  };
+
+  /** 新的用户输入：折叠当前输出 → 移除旧输入行 → 显示新输入（最多一条用户输入） */
+  const addUserInput = (text: string): void => {
+    foldCurrentOutput();
+    for (const e of entryEls.slice()) {
+      if (e.role === 'user') {
+        e.el.remove();
+        const i = entryEls.indexOf(e);
+        if (i >= 0) entryEls.splice(i, 1);
+      }
+    }
+    appendLine('user', text, true);
+  };
+
+  /** 追加输出内容（同一条输出语义）：无用户打断期间的输出全部并入当前输出条目；
+   *  asHistory=true 时直接作为折叠历史行（用于"新命令已排队时上一轮的最终回答"） */
+  const addOutput = (text: string, asHistory: boolean): void => {
+    if (asHistory) {
+      appendLine('assistant', text, true);
+      return;
+    }
+    if (!currentOutputEl) {
+      removePlaceholder(); // 最终回答到达：替换占位行
+      currentOutputEl = appendLine('assistant', text, false);
+      return;
+    }
+    currentOutputEl.textContent += '\n\n' + text; // 连续输出：并入同一条
+    clampPosition();
+    msgs.scrollTop = msgs.scrollHeight;
   };
 
   /** 「正在努力工作...」占位行（运行期间唯一的前台提示，最终回答到达时被替换） */
@@ -602,7 +619,8 @@ export function mountTaskDialog(opts: {
   };
 
   /** 处理一帧（按 seq 去重；帧可能来自本端发送或 Web 端驱动的同一会话）。
-   *  只渲染最终输出：chunk/工具调用等中间过程一律省略；除最新回答外全部折叠成一行。 */
+   *  轮次语义：最多一条用户输入 + 一条输出；无用户打断期间的输出并入同一条输出条目。
+   *  新命令已排队（queuedInputPending）时，旧回合的最终回答折叠为历史行，不占用新回合的输出位。 */
   const handleFrame = (frame: TaskStreamFrame): void => {
     if (frame.seq <= lastSeq) return;
     lastSeq = frame.seq;
@@ -611,14 +629,18 @@ export function mountTaskDialog(opts: {
         applyRunning(true);
         break;
       case 'user':
-        appendEntry('user', frame.text, true);
+        queuedInputPending = false; // 新命令已被认领：队列等待期结束
+        addUserInput(frame.text);
         break;
       case 'chunk':
         break; // 中间过程省略：不渲染流式碎块
       case 'assistant': {
-        // 最终回答：替换占位行，成为唯一展开的最新回答（appendEntry 内部折叠旧回答）
-        removePlaceholder();
-        appendEntry('assistant', frame.text, false);
+        if (queuedInputPending) {
+          // 上一轮的最终回答（新命令已在排队）：折叠为历史行，避免错位显示成新命令的回答
+          addOutput(frame.text, true);
+          break;
+        }
+        addOutput(frame.text, false);
         break;
       }
       case 'tool-call':
@@ -629,8 +651,7 @@ export function mountTaskDialog(opts: {
         break;
       case 'error': {
         applyRunning(false);
-        const el = appendEntry('assistant', '任务出错：' + frame.message, false);
-        el.classList.add('dsh-pet-task-msg-err');
+        addOutput('任务出错：' + frame.message, queuedInputPending);
         break;
       }
       case 'truncated':
@@ -642,7 +663,7 @@ export function mountTaskDialog(opts: {
 
   const updateRunUi = (): void => {
     cancelBtn.style.display = running ? 'block' : 'none';
-    sendBtn.disabled = sending || running;
+    sendBtn.disabled = sending; // 运行中仍可发送：DSH 按排队语义处理（followup 排队 + 唤醒）
   };
 
   // 工作区下拉重建（标题优先，无标题用路径；保持当前选中）
@@ -686,7 +707,8 @@ export function mountTaskDialog(opts: {
     msgs.appendChild(empty);
     lastSeq = 0;
     placeholderEl = null;
-    latestAnswerEl = null;
+    currentOutputEl = null;
+    queuedInputPending = false;
     entryEls.length = 0;
     running = false;
     updateRunUi();
@@ -736,8 +758,8 @@ export function mountTaskDialog(opts: {
       .then((h) => {
         if (closed || h.sessionId !== currentBoundSessionId) return;
         lastSeq = Math.max(lastSeq, h.lastSeq);
-        // 单轮显示：只保留当前轮输入 + 历史输出（折叠）。历史消息按轮组织（user→assistant 交替）：
-        // 定位最后一条用户输入 = 当前轮起点；之前的轮只渲染输出，当前轮渲染输入 + 输出。
+        // 单轮显示：最多一条用户输入 + 一条输出。历史按轮组织（user→assistant 交替）：
+        // 定位最后一条用户输入 = 当前轮起点；之前的轮只渲染折叠输出；当前轮渲染输入 + 输出（连续输出合并）。
         const msgsList = h.messages;
         let lastUserIdx = -1;
         for (let i = msgsList.length - 1; i >= 0; i--) {
@@ -746,16 +768,14 @@ export function mountTaskDialog(opts: {
             break;
           }
         }
-        if (lastUserIdx > 0) {
-          for (let i = 0; i < lastUserIdx; i++) {
-            if (msgsList[i].role === 'assistant') appendEntry('assistant', msgsList[i].text, true);
-          }
+        for (let i = 0; i < lastUserIdx; i++) {
+          if (msgsList[i].role === 'assistant') appendLine('assistant', msgsList[i].text, true);
         }
         const from = lastUserIdx >= 0 ? lastUserIdx : 0;
         for (let i = from; i < msgsList.length; i++) {
           const m = msgsList[i];
-          if (m.role === 'user') appendEntry('user', m.text, true);
-          else appendEntry('assistant', m.text, i !== msgsList.length - 1);
+          if (m.role === 'user') addUserInput(m.text);
+          else addOutput(m.text, false); // 连续输出并入同一条
         }
         clampPosition();
       })
@@ -771,9 +791,9 @@ export function mountTaskDialog(opts: {
     poll();
   };
 
-  // 发送任务
+  // 发送任务（运行中也可发送：DSH 按排队语义处理——followup 排队 + 唤醒）
   const doSend = (): void => {
-    if (closed || sending || running) return;
+    if (closed || sending) return;
     const text = input.value.trim();
     if (!text) return;
     sending = true;
@@ -784,6 +804,10 @@ export function mountTaskDialog(opts: {
         input.value = '';
         currentBoundSessionId = sessionId;
         syncSelectToBound();
+        // 本地即时回显：新输入立即可见（旧输入消失、旧输出折叠）；
+        // 排队等待期间旧回合的最终回答会折叠为历史行（queuedInputPending 防轮次错位）
+        addUserInput(text);
+        queuedInputPending = running;
         poll();
       })
       .catch((e) => {
