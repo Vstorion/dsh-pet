@@ -86,7 +86,9 @@ function blocksToText(blocks: unknown): string {
   return out;
 }
 
-/** session/event → 展示帧；不关心的事件返回 null */
+/** session/event → 展示帧；不关心的事件返回 null。
+ *  只保留最终输出帧（turn-start/user/assistant/turn-end/error）——
+ *  chunk 与工具调用属中间过程，两端均不展示，从源头省略（防长任务刷爆帧队列）。 */
 function eventToFrame(event: unknown): TaskFrame | null {
   const ev = (event ?? {}) as { type?: unknown; seq?: unknown; data?: Record<string, unknown> };
   const type = typeof ev.type === 'string' ? ev.type : '';
@@ -101,23 +103,10 @@ function eventToFrame(event: unknown): TaskFrame | null {
       if (!text) return null;
       return { type: 'user', seq, text };
     }
-    case 'assistant/chunk': {
-      const text = blocksToText(d.content);
-      if (!text) return null;
-      return { type: 'chunk', seq, text };
-    }
     case 'assistant/message': {
       const text = blocksToText(d.content);
       if (!text) return null;
       return { type: 'assistant', seq, text };
-    }
-    case 'tool/call':
-      return { type: 'tool-call', seq, name: String(d.name ?? ''), id: String(d.id ?? '') };
-    case 'tool/result': {
-      let ok = true;
-      if (typeof d.ok === 'boolean') ok = d.ok;
-      else if (d.isError === true || d.error !== undefined) ok = false;
-      return { type: 'tool-result', seq, id: String(d.id ?? ''), ok };
     }
     case 'turn/end':
       return { type: 'turn-end', seq };
@@ -608,13 +597,52 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
       return json(200, { ok: true });
     }
 
+    if (rest === 'task/history') {
+      if (method !== 'GET') return json(405, { error: 'method not allowed' });
+      const sessionId = String(params.get('session') ?? '');
+      if (!sessionId) return json(400, { ok: false, message: '缺少 session 参数' });
+      const sq = ctx.get('sessionQuery');
+      if (!sq || typeof sq.readSurface !== 'function') {
+        return json(200, { ok: true, sessionId, messages: [], lastSeq: 0 });
+      }
+      try {
+        const snap = (await sq.readSurface(sessionId)) as {
+          capturedThroughSeq?: number | null;
+          events?: Array<{ type?: unknown; data?: Record<string, unknown> }>;
+        };
+        const messages: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+        for (const ev of snap.events ?? []) {
+          if (ev.type === 'user/message') {
+            const text = blocksToText(ev.data?.content);
+            if (text) messages.push({ role: 'user', text });
+          } else if (ev.type === 'assistant/message') {
+            const text = blocksToText(ev.data?.content);
+            if (text) messages.push({ role: 'assistant', text });
+          }
+        }
+        return json(200, {
+          ok: true,
+          sessionId,
+          messages,
+          lastSeq: Number(snap.capturedThroughSeq ?? 0),
+        });
+      } catch (e) {
+        return json(500, { ok: false, message: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
     if (rest === 'task/stream') {
       if (method !== 'GET') return json(405, { error: 'method not allowed' });
       const sessionId = activeBindings.get(petId) ?? null;
       const q = sessionId ? queues.get(sessionId) : undefined;
+      let running = false;
+      if (sessionId) {
+        const agent = ctx.agents.get(sessionId);
+        running = Boolean(agent && agent.status === 'running');
+      }
       return json(
         200,
-        { ok: true, sessionId, events: q ? q.frames.slice() : [] },
+        { ok: true, sessionId, running, events: q ? q.frames.slice() : [] },
         { 'cache-control': 'no-cache, no-store' },
       );
     }

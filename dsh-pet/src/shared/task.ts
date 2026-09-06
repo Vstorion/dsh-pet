@@ -46,12 +46,23 @@ export interface TaskCurrentState {
   folder: string;
 }
 
-/** /task/stream 响应：该宠物当前绑定会话的帧缓冲（客户端按 seq 去重） */
+/** /task/stream 响应：该宠物当前绑定会话的帧缓冲（客户端按 seq 去重）+ 运行中标志 */
 export interface TaskStreamState {
   ok: boolean;
   sessionId: string | null;
+  /** 绑定会话是否正在运行（Agent.status === 'running'；占位提示的权威来源） */
+  running: boolean;
   events: TaskStreamFrame[];
   message?: string;
+}
+
+/** /task/history 响应：绑定会话的既有对话面（user/assistant 最终消息 + 已捕获水位 seq） */
+export interface TaskHistoryState {
+  ok: boolean;
+  sessionId: string;
+  messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+  /** 快照覆盖到的最后事件 seq（客户端帧去重水位） */
+  lastSeq: number;
 }
 
 const FETCH_TIMEOUT_MS = 10_000; // 单次请求超时（轮询失败静默重试；发送/取消略长）
@@ -164,6 +175,29 @@ export async function postTaskCancel(baseUrl: string, petId: string): Promise<vo
   });
 }
 
+/** GET /task/history?session=：某会话的既有对话面（切换会话后同步历史用） */
+export async function fetchTaskHistory(baseUrl: string, petId: string, sessionId: string): Promise<TaskHistoryState> {
+  const raw = (await fetchJson(
+    baseUrl + '/task/history?pet=' + encodeURIComponent(petId) + '&session=' + encodeURIComponent(sessionId),
+  )) as Record<string, unknown>;
+  const messages = Array.isArray(raw.messages)
+    ? (raw.messages as Array<Record<string, unknown>>)
+        .map((m) => {
+          const role = m.role === 'user' || m.role === 'assistant' ? m.role : '';
+          const text = typeof m.text === 'string' ? m.text : '';
+          if (!role || !text) return null;
+          return { role: role as 'user' | 'assistant', text };
+        })
+        .filter((m): m is { role: 'user' | 'assistant'; text: string } => m !== null)
+    : [];
+  return {
+    ok: raw.ok === true,
+    sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : sessionId,
+    messages,
+    lastSeq: Number(raw.lastSeq ?? 0),
+  };
+}
+
 /** GET /task/stream：拉取帧缓冲 */
 export async function fetchTaskStream(baseUrl: string, petId: string): Promise<TaskStreamState> {
   const raw = (await fetchJson(baseUrl + '/task/stream?pet=' + encodeURIComponent(petId))) as Record<string, unknown>;
@@ -171,6 +205,7 @@ export async function fetchTaskStream(baseUrl: string, petId: string): Promise<T
   return {
     ok: raw.ok === true,
     sessionId: typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : null,
+    running: raw.running === true,
     events,
     message: typeof raw.message === 'string' ? raw.message : undefined,
   };
@@ -200,9 +235,11 @@ export const TASK_CSS = [
   '.dsh-pet-task-msgs{flex:1;min-height:120px;max-height:300px;overflow-y:auto;padding:8px 10px;',
   'user-select:text;display:flex;flex-direction:column;gap:6px}',
   '.dsh-pet-task-msg{max-width:96%;padding:5px 9px;border-radius:9px;white-space:pre-wrap;',
-  'overflow-wrap:anywhere;font-size:13px}',
+  'overflow-wrap:anywhere;font-size:13px;cursor:pointer}',
+  '.dsh-pet-task-msg.is-collapsed{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:1.6em}',
   '.dsh-pet-task-msg-user{align-self:flex-end;background:#e8f2ff;color:#1f3a5f}',
   '.dsh-pet-task-msg-assistant{align-self:flex-start;background:rgba(0,0,0,.055)}',
+  '.dsh-pet-task-msg-running{align-self:flex-start;color:rgba(43,43,43,.78);font-size:13px;padding:5px 9px;cursor:default}',
   '.dsh-pet-task-msg-tool{align-self:flex-start;font-size:12px;color:rgba(43,43,43,.62);padding:1px 2px}',
   '.dsh-pet-task-msg-err{align-self:flex-start;background:#fdecea;color:#b3402f}',
   '.dsh-pet-task-msg-note{align-self:center;font-size:11px;color:rgba(43,43,43,.45)}',
@@ -354,8 +391,8 @@ export function mountTaskDialog(opts: {
   let sending = false;
   let running = false;
   let lastSeq = 0; // 帧去重水位（event.seq 单调；<= 已处理）
-  let currentAssistantEl: HTMLElement | null = null;
-  let toolEls = new Map<string, HTMLElement>();
+  let placeholderEl: HTMLElement | null = null; // 「正在努力工作...」占位行
+  let latestAnswerEl: HTMLElement | null = null; // 最新的回答（唯一保持展开的消息）
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let workspaces: TaskWorkspaceItem[] = [];
   let sessions: TaskSessionItem[] = [];
@@ -371,64 +408,99 @@ export function mountTaskDialog(opts: {
     errline.style.display = 'none';
   };
 
-  const appendNode = (cls: string): HTMLElement => {
+  const ensureArea = (): void => {
     if (empty.parentNode === msgs) msgs.removeChild(empty);
+  };
+
+  /** 追加一条消息（用户/回答）：collapsed=true 折叠成一行；点击整行切换折叠/展开 */
+  const appendEntry = (role: 'user' | 'assistant', text: string, collapsed: boolean): HTMLElement => {
+    ensureArea();
     const el = document.createElement('div');
-    el.className = 'dsh-pet-task-msg ' + cls;
+    el.className = 'dsh-pet-task-msg ' + (role === 'user' ? 'dsh-pet-task-msg-user' : 'dsh-pet-task-msg-assistant');
+    el.textContent = text;
+    el.classList.toggle('is-collapsed', collapsed);
+    el.title = collapsed ? '点击展开' : '点击折叠';
+    el.addEventListener('click', () => {
+      const now = el.classList.toggle('is-collapsed');
+      el.title = now ? '点击展开' : '点击折叠';
+    });
     msgs.appendChild(el);
     msgs.scrollTop = msgs.scrollHeight;
     return el;
   };
 
-  /** 处理一帧（按 seq 去重；帧可能来自本端发送或 Web 端驱动的同一会话） */
+  /** 新回答出现时：把上一个展开的回答折叠（除最新回答外全部一行） */
+  const collapseLatestAnswer = (): void => {
+    if (latestAnswerEl) {
+      latestAnswerEl.classList.add('is-collapsed');
+      latestAnswerEl.title = '点击展开';
+      latestAnswerEl = null;
+    }
+  };
+
+  /** 「正在努力工作...」占位行（运行期间唯一的前台提示，最终回答到达时被替换） */
+  const showPlaceholder = (): void => {
+    if (placeholderEl) return;
+    ensureArea();
+    placeholderEl = document.createElement('div');
+    placeholderEl.className = 'dsh-pet-task-msg dsh-pet-task-msg-running';
+    placeholderEl.textContent = '正在努力工作...';
+    msgs.appendChild(placeholderEl);
+    msgs.scrollTop = msgs.scrollHeight;
+  };
+
+  const removePlaceholder = (): void => {
+    if (!placeholderEl) return;
+    placeholderEl.remove();
+    placeholderEl = null;
+  };
+
+  /** 运行态切换：开始 → 显示占位；结束 → 撤下占位（最终回答到达时它已被替换） */
+  const applyRunning = (now: boolean): void => {
+    if (now === running) return;
+    running = now;
+    if (now) showPlaceholder();
+    else removePlaceholder();
+    updateRunUi();
+  };
+
+  /** 处理一帧（按 seq 去重；帧可能来自本端发送或 Web 端驱动的同一会话）。
+   *  只渲染最终输出：chunk/工具调用等中间过程一律省略；除最新回答外全部折叠成一行。 */
   const handleFrame = (frame: TaskStreamFrame): void => {
     if (frame.seq <= lastSeq) return;
     lastSeq = frame.seq;
     switch (frame.type) {
       case 'turn-start':
-        running = true;
-        updateRunUi();
+        applyRunning(true);
         break;
       case 'user':
-        appendNode('dsh-pet-task-msg-user').textContent = frame.text;
+        appendEntry('user', frame.text, true);
         break;
       case 'chunk':
-        if (!currentAssistantEl) currentAssistantEl = appendNode('dsh-pet-task-msg-assistant');
-        currentAssistantEl.textContent += frame.text;
-        break;
+        break; // 中间过程省略：不渲染流式碎块
       case 'assistant': {
-        const el = currentAssistantEl ?? appendNode('dsh-pet-task-msg-assistant');
-        el.textContent = frame.text;
-        currentAssistantEl = null;
+        // 最终回答：替换占位行，成为唯一展开的最新回答
+        removePlaceholder();
+        collapseLatestAnswer();
+        latestAnswerEl = appendEntry('assistant', frame.text, false);
         break;
       }
-      case 'tool-call': {
-        const el = appendNode('dsh-pet-task-msg-tool');
-        el.textContent = '▸ ' + frame.name + '…';
-        toolEls.set(frame.id, el);
-        break;
-      }
-      case 'tool-result': {
-        const el = toolEls.get(frame.id);
-        if (el) el.textContent = (frame.ok ? '✓ ' : '✗ ') + el.textContent.slice(2);
-        toolEls.delete(frame.id);
-        break;
-      }
+      case 'tool-call':
+      case 'tool-result':
+        break; // 中间过程省略：不渲染工具调用
       case 'turn-end':
-        running = false;
-        currentAssistantEl = null;
-        toolEls.clear();
-        updateRunUi();
+        applyRunning(false);
         break;
-      case 'error':
-        appendNode('dsh-pet-task-msg-err').textContent = '任务出错：' + frame.message;
-        running = false;
-        currentAssistantEl = null;
-        updateRunUi();
+      case 'error': {
+        applyRunning(false);
+        collapseLatestAnswer();
+        const el = appendEntry('assistant', '任务出错：' + frame.message, false);
+        el.classList.add('dsh-pet-task-msg-err');
+        latestAnswerEl = el;
         break;
+      }
       case 'truncated':
-        appendNode('dsh-pet-task-msg-note').textContent = '更早的消息已省略';
-        break;
+        break; // 折叠展示下无需省略提示
       default:
         break;
     }
@@ -479,8 +551,8 @@ export function mountTaskDialog(opts: {
     msgs.innerHTML = '';
     msgs.appendChild(empty);
     lastSeq = 0;
-    currentAssistantEl = null;
-    toolEls = new Map();
+    placeholderEl = null;
+    latestAnswerEl = null;
     running = false;
     updateRunUi();
   };
@@ -511,6 +583,7 @@ export function mountTaskDialog(opts: {
           currentBoundSessionId = state.sessionId;
           syncSelectToBound();
         }
+        applyRunning(state.running);
         for (const frame of state.events) handleFrame(frame);
       })
       .catch(() => {
@@ -521,9 +594,34 @@ export function mountTaskDialog(opts: {
       });
   };
 
-  // 绑定变更后的统一刷新：清消息 + 重拉当前绑定
+  // 同步某会话的历史对话面（切换/打开会话后）：全部折叠成一行，仅最新回答保持展开；
+  // 快照水位 seq 并入去重水位——历史已含的帧不再重复渲染
+  const loadHistory = (sessionId: string): Promise<void> => {
+    return fetchTaskHistory(baseUrl, petId, sessionId)
+      .then((h) => {
+        if (closed || h.sessionId !== currentBoundSessionId) return;
+        lastSeq = Math.max(lastSeq, h.lastSeq);
+        for (let i = 0; i < h.messages.length; i++) {
+          const m = h.messages[i];
+          const isLatest = i === h.messages.length - 1;
+          if (m.role === 'assistant') {
+            collapseLatestAnswer();
+            const el = appendEntry('assistant', m.text, !isLatest);
+            if (isLatest) latestAnswerEl = el;
+          } else {
+            appendEntry('user', m.text, true);
+          }
+        }
+      })
+      .catch(() => {
+        /* 历史读取失败静默：轮询帧继续渲染后续消息 */
+      });
+  };
+
+  // 绑定变更后的统一刷新：清消息 → 同步该会话历史 → 继续轮询
   const applyBinding = (): void => {
     resetMessages();
+    if (currentBoundSessionId) loadHistory(currentBoundSessionId);
     poll();
   };
 
@@ -671,7 +769,10 @@ export function mountTaskDialog(opts: {
             rebuildWorkspaceSelect();
           })
           .finally(() => {
-            if (!closed) pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+            if (closed) return;
+            // 打开即有绑定会话：同步其历史对话面（折叠展示，最新回答展开）
+            if (currentBoundSessionId) loadHistory(currentBoundSessionId);
+            pollTimer = setInterval(poll, POLL_INTERVAL_MS);
           });
       });
   };
