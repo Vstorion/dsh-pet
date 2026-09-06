@@ -50,6 +50,7 @@ import { queryBalance } from './balance';
 import { generateWhisper } from './whisper';
 import { generateChat, type ChatMemoryMessage } from './chat';
 import { createTaskBridge, type TaskBridge } from './task';
+import { createUpdateBridge, type UpdateBridge } from './update';
 import { findPetInstance, flattenPetList, readAllConfig, saveUserConfig, type ConfigPaths } from './config';
 import {
   reduceWorkStatus,
@@ -183,6 +184,8 @@ export function apply(ctx: any): void {
     userRoot,
     readAllConfig: () => readAllConfig(configPaths),
   });
+  // 更新桥（重启更新）：/update* 路由——启动检测结果 + 拉起重启更新脚本（只更新 DSH 本体，不碰插件）
+  const updateBridge: UpdateBridge = createUpdateBridge();
   // 用户动画目录（thumb 播放时优先于包内素材；唯一格式 webm，素材放 main-animation/webm/）
   const thumbUserRoot = join(userRoot, 'main-animation');
   // 手动触发计数：/balance 命令 +1，两边（浏览器/桌面）同样的 1s 轮询检测变化后刷新余额（进程内内存态，重启归零）
@@ -757,6 +760,12 @@ export function apply(ctx: any): void {
     // 任务窗两端共用；route 恒返回 json/text，与 RouteResult 结构兼容）
     if (rest.startsWith('task/')) {
       return await taskBridge.route(rest, method, body, url.searchParams);
+    }
+
+    // 更新桥路由：/update/status（启动检测结果，右键「重启更新」的显示条件）
+    // 与 /update/restart（拉起重启更新脚本：关 DSH → git fetch/rebase 本体 → 重启）
+    if (rest.startsWith('update/')) {
+      return await updateBridge.route(rest, method);
     }
 
     // 动画文件：/dsh-pet-7340/thumb/<素材根>/<file>，唯一格式 webm。

@@ -162,6 +162,8 @@ export function makePetUI(rt: {
     const [workText, setWorkText] = useState<string | null>(null);
     // 右键菜单（统一自绘组件）：当前挂载的 close() 句柄，卸载/重开前清理
     const menuRef = useRef<{ close: () => void } | null>(null);
+    // 重启更新可用性（启动检测 check-update.ps1 的结果；true 才在菜单显示「重启更新」）
+    const updateAvailableRef = useRef(false);
     // 对话弹窗（与桌面共用 shared 组件）：当前挂载的 close() 句柄，卸载/重开前清理
     const chatRef = useRef<{ close: () => void } | null>(null);
     const taskRef = useRef<{ close: () => void } | null>(null);
@@ -1250,6 +1252,23 @@ export function makePetUI(rt: {
         setCustomPos(null);
         return;
       }
+      if (leaf.action === 'restart-update') {
+        // 重启更新：host 拉起独立 PowerShell 控制台（关 DSH → git fetch/rebase 本体 → 自动重启；
+        // 进度显示在 PowerShell 窗口）。数秒后本页/桌宠都会关闭，随后自动重启。
+        fetch('/dsh-pet-7340/update/restart', { method: 'POST', signal: AbortSignal.timeout(6000) })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((st) => {
+            if (st && st.ok) {
+              console.info('[dsh-pet] 重启更新已启动：留意新打开的 PowerShell 窗口，DSH 数秒后关闭并自动重启');
+            } else {
+              console.error('[dsh-pet] 重启更新启动失败：' + (st && st.message ? st.message : 'unknown'));
+            }
+          })
+          .catch((err) => {
+            console.error('[dsh-pet] 重启更新请求失败：' + (err && err.message ? err.message : String(err)));
+          });
+        return;
+      }
       if (!leaf.anim) return;
       // 文字类（noMirror）朝右站姿是镜像的：点播前强制朝左，避免文字镜像（与随机链"朝右不选文字"同语义）
       if (isNoMirrorAnimation(petAnims.categories, leaf.anim) && facingRef.current === 'right') {
@@ -1269,23 +1288,31 @@ export function makePetUI(rt: {
       setOnce(true);
       setAnim(leaf.anim);
     };
-    const handleContextMenu = (e: ReactNS.MouseEvent<HTMLDivElement>) => {
+    // 「重启更新」可用性：读 host /update/status（harness coat 启动检测 update-check.json 的结果）
+    const fetchUpdateStatus = (): Promise<void> => {
+      return fetch('/dsh-pet-7340/update/status', { cache: 'no-store', signal: AbortSignal.timeout(4000) })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((st) => {
+          updateAvailableRef.current = !!(st && st.ok && st.available === true);
+        })
+        .catch(() => {
+          /* 检测通道失败：沿用上次缓存（默认无该项），菜单照常打开 */
+        });
+    };
+
+    const openContextMenu = (e: ReactNS.MouseEvent<HTMLDivElement>) => {
       // 工具项（碎碎念——手动触发**不受 whisperEnabled 限制**，该字段只影响自动周期轮询；
-      // 任务/闲聊/回到初始位置，两端共用）+ 动作树（动作→分类→具体动画）
+      // 任务/闲聊/回到初始位置，两端共用）+ 条件项「重启更新」（启动检测发现 DSH 本体有更新才显示）
+      // + 动作树（动作→分类→具体动画）
       const tree: MenuNode[] = [
         { label: '碎碎念', action: 'whisper' },
         { label: '任务', action: 'task' },
         { label: '闲聊', action: 'chat' },
         { label: '回到初始位置', action: 'home' },
+        ...(updateAvailableRef.current ? [{ label: '重启更新', action: 'restart-update' } as MenuNode] : []),
         ...buildMenuTree(petAnims),
       ];
       if (!tree.length) return;
-      e.preventDefault();
-      e.stopPropagation(); // 不触碰 DSH 页面任何菜单/右键处理
-      const d = dragRef.current;
-      if (d.active || d.dragging || justDraggedRef.current) return;
-      stopThrow(); // 菜单弹出前停住飞行中的宠物
-      stopMove(); // 菜单悬停期间宠物不漫游
       if (menuRef.current) menuRef.current.close();
       menuRef.current = mountContextMenu({
         tree,
@@ -1297,6 +1324,21 @@ export function makePetUI(rt: {
           if (menuRef.current) menuRef.current = null;
         },
       });
+    };
+
+    const handleContextMenu = (e: ReactNS.MouseEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation(); // 不触碰 DSH 页面任何菜单/右键处理
+      const d = dragRef.current;
+      if (d.active || d.dragging || justDraggedRef.current) return;
+      stopThrow(); // 菜单弹出前停住飞行中的宠物
+      stopMove(); // 菜单悬停期间宠物不漫游
+      // 打开前刷一次启动检测结果（本地 HTTP 毫秒级）：检测到 DSH 本体有更新才显示「重启更新」；
+      // 刷新失败沿用上次缓存——菜单绝不因检测通道故障而打不开
+      fetchUpdateStatus().then(
+        () => openContextMenu(e),
+        () => openContextMenu(e),
+      );
     };
 
     // ---- 渲染 ----

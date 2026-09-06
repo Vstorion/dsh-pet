@@ -34,6 +34,9 @@ const BALANCE_URL = BASE + '/balance';
 const TRIGGER_URL = BASE + '/balance/trigger';
 const WHISPER_URL = BASE + '/whisper';
 const WORK_STATUS_URL = BASE + '/work-status'; // 工作状态联动：1s 轮询，ts 变化才触发（与浏览器同一端点）
+// 重启更新（DSH 本体）：启动检测结果 + 拉起重启更新脚本（关 DSH → git fetch/rebase 本体 → 重启）
+const UPDATE_STATUS_URL = BASE + '/update/status';
+const UPDATE_RESTART_URL = BASE + '/update/restart';
 const BUBBLE_DURATION_MS = 10 * 1000; // 余额/碎碎念气泡展示时长（与浏览器一致：定时自动消失，与动画解耦）
 // 窗口四周外扩 = 该比例 × 宠物尺寸：为气泡 / 未来可能的弹窗预留显示空间；
 // 外扩区透明且点击穿透（只有身体命中区可交互）。单点可调——按实际观感改这里。

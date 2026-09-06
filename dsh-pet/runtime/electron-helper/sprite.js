@@ -79,6 +79,8 @@ class PetSprite {
     // 右键菜单（统一自绘组件，两端共用同一份：树+渲染均来自 shared-core）
     this.menuOpen = false; // 菜单开启期间强制整窗可交互（悬停菜单不触发穿透翻转）
     this.menuClose = null; // 当前菜单的 close()（打开时挂载，关闭后置空）
+    // 重启更新可用性（启动检测 check-update.ps1 的结果；true 才在菜单显示「重启更新」）
+    this.updateAvailable = false;
     // 余额气泡
     this.bubbleOn = false;
     this.bubbleTimer = null;
@@ -860,7 +862,18 @@ class PetSprite {
     e.preventDefault();
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
-    // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 任务 / 闲聊 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
+    // 打开前刷一次启动检测结果（本地管道毫秒级）：检测到 DSH 本体有更新才显示「重启更新」；
+    // 刷新失败沿用上次缓存（默认无该项）——菜单绝不因检测通道故障而打不开
+    this.fetchUpdateStatus().then(
+      () => this.openContextMenu(e),
+      () => this.openContextMenu(e),
+    );
+  }
+
+  openContextMenu(e) {
+    if (this.menuOpen) return;
+    // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 任务 / 闲聊 / 回到初始位置 / 隐藏人物）
+    // + 条件项「重启更新」（启动检测发现 DSH 本体有更新才出现）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/任务/闲聊项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
     const tools = [{ label: '打开网站', action: 'open-site' }];
     if (this.pet.balanceEnabled) tools.push({ label: '查看余额', action: 'show-balance' });
@@ -871,6 +884,7 @@ class PetSprite {
       { label: '回到初始位置', action: 'home' },
       { label: '隐藏人物', action: 'hide-pet' },
     );
+    if (this.updateAvailable) tools.push({ label: '重启更新', action: 'restart-update' });
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
     this.menuOpen = true;
@@ -888,6 +902,37 @@ class PetSprite {
       },
     });
     this.menuClose = m.close;
+  }
+
+  // 「重启更新」可用性：读 host /update/status（harness coat 启动检测 update-check.json 的结果）
+  fetchUpdateStatus() {
+    return fetch(UPDATE_STATUS_URL, { cache: 'no-store', signal: AbortSignal.timeout(4000) })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((st) => {
+        this.updateAvailable = !!(st && st.ok && st.available === true);
+        window.__dshPetDebug.updateAvailable = this.updateAvailable;
+      })
+      .catch(() => {
+        /* 检测通道失败：沿用上次缓存（默认无该项），菜单照常打开 */
+      });
+  }
+
+  // 「重启更新」菜单：host 拉起独立 PowerShell 控制台执行重启更新脚本
+  // （关 DSH → git fetch/rebase 本体 → 重新启动；进度显示在 PowerShell 窗口）。
+  // 数秒后 DSH 与桌宠都会关闭，随后自动重新启动。
+  restartUpdateFromMenu() {
+    fetch(UPDATE_RESTART_URL, { method: 'POST', signal: AbortSignal.timeout(6000) })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((st) => {
+        if (st && st.ok) {
+          console.info('[dsh-pet] 重启更新已启动：留意新打开的 PowerShell 窗口，DSH 数秒后关闭并自动重启');
+        } else {
+          console.error('[dsh-pet] 重启更新启动失败：' + (st && st.message ? st.message : 'unknown'));
+        }
+      })
+      .catch((err) => {
+        console.error('[dsh-pet] 重启更新请求失败：' + (err && err.message ? err.message : String(err)));
+      });
   }
 
   onMenuAction(leaf) {
@@ -920,6 +965,11 @@ class PetSprite {
     if (leaf.action === 'hide-pet') {
       // 「隐藏人物」：主进程隐藏本窗口（DSH/宿主照常运行），系统托盘图标随时恢复
       if (window.petBridge) window.petBridge.hidePet();
+      return;
+    }
+    if (leaf.action === 'restart-update') {
+      // 「重启更新」：关闭 DSH → 更新本体（git fetch/rebase）→ 自动重启；进度在 PowerShell 窗口
+      this.restartUpdateFromMenu();
       return;
     }
     if (!leaf.anim) return;
