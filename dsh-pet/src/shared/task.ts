@@ -365,8 +365,9 @@ export const TASK_CSS = [
   'user-select:text;display:flex;flex-direction:column;gap:6px}',
   '.dsh-pet-task-msg{max-width:96%;padding:6px 10px;border-radius:9px;white-space:pre-wrap;',
   'overflow-wrap:anywhere;font-size:14px;cursor:pointer}',
-  // 折叠态：一行省略号；展开态：内容任其撑高（消息区整体滚动，窗口可拉伸）
-  '.dsh-pet-task-msg.is-collapsed{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:1.8em}',
+  // 折叠态：铺满一行显示（stretch 取容器全宽，短输入不再缩成小胶囊）；
+  // nowrap 保证单行，省略号截断；不再设 max-height（1.8em < 行高+内边距会裁掉文字）
+  '.dsh-pet-task-msg.is-collapsed{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:stretch}',
   // Markdown 渲染态（展开的回答）：容器改为正常空白流，块级元素自带排版
   '.dsh-pet-task-msg.dsh-pet-task-md{white-space:normal}',
   '.dsh-pet-task-md p{margin:0 0 6px}.dsh-pet-task-md p:last-child{margin-bottom:0}',
