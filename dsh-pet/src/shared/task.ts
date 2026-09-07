@@ -363,7 +363,8 @@ export const TASK_CSS = [
   '.dsh-pet-task-row button:hover{background:rgba(0,0,0,.05)}',
   '.dsh-pet-task-msgs{flex:1;min-height:80px;overflow-y:auto;padding:8px 10px;',
   'user-select:text;display:flex;flex-direction:column;gap:6px}',
-  '.dsh-pet-task-msg{max-width:96%;padding:6px 10px;border-radius:9px;white-space:pre-wrap;',
+  // flex:none —— 消息条目不参与纵向 flex 收缩（展开长回答时，折叠的短条目不会被挤压裁掉）
+  '.dsh-pet-task-msg{flex:none;max-width:96%;padding:6px 10px;border-radius:9px;white-space:pre-wrap;',
   'overflow-wrap:anywhere;font-size:14px;cursor:pointer}',
   // 折叠态：铺满一行显示（stretch 取容器全宽，短输入不再缩成小胶囊）；
   // nowrap 保证单行，省略号截断；不再设 max-height（1.8em < 行高+内边距会裁掉文字）
