@@ -399,7 +399,10 @@ export const TASK_CSS = [
   '{content:"▸ " ;color:rgba(43,43,43,.45)}',
   '.dsh-pet-task-msg-user:not(.is-collapsed)::before,.dsh-pet-task-msg-assistant:not(.is-collapsed)::before',
   '{content:"▾ " ;color:rgba(43,43,43,.45)}',
-  '.dsh-pet-task-msg-user{align-self:flex-end;background:#e8f2ff;color:#1f3a5f}',
+  // 用户消息：右对齐 + 始终与左边缘保持 56px 空白（与从左边开始的回答形成区分）；
+  // 折叠态改为 stretch + 左缩进：左侧留白、右侧铺满一行（后置规则覆盖 flex-end 与 96% 上限）
+  '.dsh-pet-task-msg-user{align-self:flex-end;max-width:calc(96% - 56px);background:#e8f2ff;color:#1f3a5f}',
+  '.dsh-pet-task-msg-user.is-collapsed{align-self:stretch;margin-left:56px;max-width:none}',
   '.dsh-pet-task-msg-assistant{align-self:flex-start;background:rgba(0,0,0,.055)}',
   '.dsh-pet-task-msg-running{align-self:flex-start;color:rgba(43,43,43,.78);font-size:13px;padding:5px 9px;cursor:default}',
   '.dsh-pet-task-msg-tool{align-self:flex-start;font-size:12px;color:rgba(43,43,43,.62);padding:1px 2px}',
