@@ -337,8 +337,8 @@ export function renderMarkdown(src: string): string {
 /** 弹窗样式 —— 两端注入同一份（与 CHAT_CSS 同模式；视觉对齐浏览器/桌面）。
  *  窗口形态：标题栏 + 工作区/会话行 + 滚动消息区 + 底部输入。字体与气泡同款（上首软糖体）。 */
 export const TASK_CSS = [
-  '.dsh-pet-task{position:fixed;z-index:2147483002;width:500px;max-width:88vw;',
-  'max-height:min(680px,calc(100vh - 10px));',
+  '.dsh-pet-task{position:fixed;z-index:2147483002;width:500px;height:440px;max-width:88vw;',
+  'max-height:calc(100vh - 10px);',
   'background:rgba(255,255,255,.985);border:1px solid rgba(0,0,0,.14);border-radius:12px;',
   'box-shadow:0 12px 40px rgba(0,0,0,.26);color:#2b2b2b;font-size:13px;line-height:1.5;',
   "font-family:'ShangshouSoftCandy','Yuanti SC','YouYuan','幼圆','Comic Sans MS','PingFang SC','Microsoft YaHei',sans-serif;",
@@ -361,13 +361,12 @@ export const TASK_CSS = [
   '.dsh-pet-task-row button{flex:none;font-family:inherit;font-size:12px;color:#2b2b2b;',
   'border:1px solid rgba(0,0,0,.16);border-radius:6px;padding:3px 9px;background:#fff;cursor:pointer}',
   '.dsh-pet-task-row button:hover{background:rgba(0,0,0,.05)}',
-  '.dsh-pet-task-msgs{flex:1;min-height:140px;max-height:480px;overflow-y:auto;padding:8px 10px;',
+  '.dsh-pet-task-msgs{flex:1;min-height:80px;overflow-y:auto;padding:8px 10px;',
   'user-select:text;display:flex;flex-direction:column;gap:6px}',
   '.dsh-pet-task-msg{max-width:96%;padding:6px 10px;border-radius:9px;white-space:pre-wrap;',
   'overflow-wrap:anywhere;font-size:14px;cursor:pointer}',
-  // 折叠态：一行省略号；展开态：内容超高时消息内部滚动（不把预览区撑爆）
+  // 折叠态：一行省略号；展开态：内容任其撑高（消息区整体滚动，窗口可拉伸）
   '.dsh-pet-task-msg.is-collapsed{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:1.8em}',
-  '.dsh-pet-task-msg:not(.is-collapsed){max-height:260px;overflow-y:auto}',
   // Markdown 渲染态（展开的回答）：容器改为正常空白流，块级元素自带排版
   '.dsh-pet-task-msg.dsh-pet-task-md{white-space:normal}',
   '.dsh-pet-task-md p{margin:0 0 6px}.dsh-pet-task-md p:last-child{margin-bottom:0}',
@@ -386,6 +385,13 @@ export const TASK_CSS = [
   '.dsh-pet-task-md hr{border:none;border-top:1px solid rgba(0,0,0,.12);margin:6px 0}',
   '.dsh-pet-task-md a{color:#4a7fc1}',
   '.dsh-pet-task-md strong{font-weight:700}',
+  // 拉伸缩放手柄：右下角 + 右缘 + 下缘（透明热区；角上带斜纹提示）
+  '.dsh-pet-task-resize{position:absolute;z-index:3;touch-action:none}',
+  '.dsh-pet-task-resize-se{right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;',
+  'background:linear-gradient(135deg,transparent 0 58%,rgba(43,43,43,.35) 58% 63%,transparent 63% 74%,',
+  'rgba(43,43,43,.35) 74% 79%,transparent 79%)}',
+  '.dsh-pet-task-resize-s{left:0;right:16px;bottom:0;height:6px;cursor:ns-resize}',
+  '.dsh-pet-task-resize-e{top:0;right:0;bottom:16px;width:6px;cursor:ew-resize}',
   // 折叠/展开指示符（仅对话消息；占位行不参与）
   '.dsh-pet-task-msg-user.is-collapsed::before,.dsh-pet-task-msg-assistant.is-collapsed::before',
   '{content:"▸ " ;color:rgba(43,43,43,.45)}',
@@ -442,6 +448,7 @@ export interface TaskDialogMount {
  * 打开期间每 500ms 轮询 /task/stream 排水渲染；Esc 或点 × 关闭（不做点外关闭——窗口语义）。
  * 跟随/拖动：提供 anchor（宠物身体锚点）时，窗口随宠物移动保持相对位置；
  * 拖动标题栏可单独调整相对位置（之后继续跟随，保持新偏移）。
+ * 拉伸缩放：右下角 / 右缘 / 下缘三处热区可拖动调整尺寸（最小 300×220，不超出视口）。
  */
 export function mountTaskDialog(opts: {
   petId: string;
@@ -557,9 +564,21 @@ export function mountTaskDialog(opts: {
   foot.appendChild(errline);
   foot.appendChild(actions);
 
+  // ---- 拉伸缩放手柄：右下角 / 右缘 / 下缘 ----
+  const resizeSE = document.createElement('div');
+  resizeSE.className = 'dsh-pet-task-resize dsh-pet-task-resize-se';
+  resizeSE.title = '拖动调整大小';
+  const resizeS = document.createElement('div');
+  resizeS.className = 'dsh-pet-task-resize dsh-pet-task-resize-s';
+  const resizeE = document.createElement('div');
+  resizeE.className = 'dsh-pet-task-resize dsh-pet-task-resize-e';
+
   root.appendChild(head);
   root.appendChild(msgs);
   root.appendChild(foot);
+  root.appendChild(resizeE);
+  root.appendChild(resizeS);
+  root.appendChild(resizeSE);
   document.body.appendChild(root);
 
   // 位置：以 (x,y) 落点，超出视口夹回
@@ -622,6 +641,42 @@ export function mountTaskDialog(opts: {
   };
   titleRow.addEventListener('pointerup', endDrag);
   titleRow.addEventListener('pointercancel', endDrag);
+
+  // ---- 拉伸缩放：右下角 / 右缘 / 下缘（指针捕获拖动；尺寸夹在最小/视口可用空间内） ----
+  const RESIZE_MIN_W = 300;
+  const RESIZE_MIN_H = 220;
+  let resizing: { dir: 'se' | 's' | 'e'; startX: number; startY: number; startW: number; startH: number } | null = null;
+  const attachResize = (handle: HTMLElement, dir: 'se' | 's' | 'e'): void => {
+    handle.addEventListener('pointerdown', (e) => {
+      if (closed) return;
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      const r = root.getBoundingClientRect();
+      resizing = { dir, startX: e.clientX, startY: e.clientY, startW: r.width, startH: r.height };
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!resizing) return;
+      const r = root.getBoundingClientRect();
+      // 以窗口当前左上角为基准夹取可用空间（避免外拉越界后再被 clampPosition 拉回打架）
+      const maxW = Math.max(RESIZE_MIN_W, window.innerWidth - r.left - 4);
+      const maxH = Math.max(RESIZE_MIN_H, window.innerHeight - r.top - 4);
+      const dw = dir === 's' ? 0 : e.clientX - resizing.startX;
+      const dh = dir === 'e' ? 0 : e.clientY - resizing.startY;
+      root.style.width = Math.min(maxW, Math.max(RESIZE_MIN_W, resizing.startW + dw)) + 'px';
+      root.style.height = Math.min(maxH, Math.max(RESIZE_MIN_H, resizing.startH + dh)) + 'px';
+    });
+    const endResize = (): void => {
+      if (!resizing) return;
+      resizing = null;
+      clampPosition();
+      msgs.scrollTop = msgs.scrollHeight; // 尺寸变化后保持消息区贴底
+    };
+    handle.addEventListener('pointerup', endResize);
+    handle.addEventListener('pointercancel', endResize);
+  };
+  attachResize(resizeSE, 'se');
+  attachResize(resizeS, 's');
+  attachResize(resizeE, 'e');
 
   // ---- 渲染状态 ----
   let closed = false;
