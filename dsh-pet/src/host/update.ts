@@ -4,9 +4,13 @@
  * 「harness coat」的启动检测 check-update.ps1 把"DSH 本体是否有更新"落成
  * <coat>/update-check.json；本模块把它暴露给两端右键菜单：
  *   - update/status   → 启动检测结果（available=true 才显示「重启更新」菜单项）
- *   - update/restart  → 拉起 <coat>/restart-dsh-update.ps1（独立 PowerShell 控制台：
+ *   - update/restart  → 经 <coat>/restart-dsh-update.bat 拉起
+ *     restart-dsh-update.ps1（bat 内用 start 打开可见 PowerShell 控制台：
  *     关闭 DSH → git fetch/rebase 更新本体 → 重新启动；进度显示在该窗口。
  *     只更新 DSH 本体，不碰 dsh-pet 插件）
+ *     实测 detached+stdio-ignore 直接 spawn powershell.exe 会静默死亡，
+ *     所以主路径是 cmd /c 启动 bat（bat 文件内写死引号，跨层无转义问题）；
+ *     bat 缺失时才回退到直接 spawn（脚本自带自重启守卫）。
  *
  * coat 根目录推导：DSH 由 Start-DSH-Web.bat 以 <coat>/deepseek-harness 为 cwd 启动，
  * 故 dirname(process.cwd()) 即 coat 根；DSH_PET_COAT_DIR 环境变量可显式覆盖。
@@ -96,12 +100,37 @@ export function createUpdateBridge(): UpdateBridge {
       }
       const coatDir = dirname(script);
       try {
-        diagLog(coatDir, `host: /update/restart - spawning powershell -File "${script}"`);
-        // 直接 spawn powershell -File（-File 吞整行路径，空格安全；不经过 cmd start——
-        // 实测 start 会弄坏带空格的引号参数，powershell 报错即退 = 用户看到的"黑框一闪"）。
-        // 脚本首次运行检测到无 DSH_PET_UPDATE_CONSOLE 标记时会用 Start-Process
-        // 把自己重开进一个**可见的新控制台**（进度显示在那里），随即本进程退出——
-        // 因此 DSH 数秒后被脚本关闭时更新流程不受牵连。
+        // Primary launch path: cmd /c <coat>\restart-dsh-update.bat.
+        // The bat runs headless (cmd.exe needs no console) and uses "start"
+        // to open a NEW VISIBLE PowerShell console for the script, so the
+        // update progress window always appears. Directly spawning
+        // powershell.exe detached + stdio ignore proved unreliable on
+        // Windows (the process started but the script never executed), and
+        // keeping the command line inside a bat file removes every
+        // cross-layer quoting concern (the "harness coat" space).
+        const launcher = findCoatFile('restart-dsh-update.bat');
+        if (launcher) {
+          diagLog(coatDir, `host: /update/restart - spawning cmd /c "${launcher}"`);
+          const child = spawn('cmd.exe', ['/c', launcher], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: false,
+          });
+          child.on('error', (e: Error) => {
+            diagLog(coatDir, `host: spawn ERROR: ${e.message}`);
+          });
+          child.unref();
+          diagLog(coatDir, `host: spawn requested pid=${child.pid ?? 0}`);
+          return json(200, { ok: true });
+        }
+
+        // Fallback (launcher bat missing): spawn powershell directly.
+        // The script detects the missing DSH_PET_UPDATE_CONSOLE marker and
+        // relaunches itself into a visible console via Start-Process.
+        diagLog(
+          coatDir,
+          `host: /update/restart - launcher bat missing, spawning powershell -File "${script}"`,
+        );
         const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
           detached: true,
           stdio: 'ignore',
