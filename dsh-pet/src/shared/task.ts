@@ -214,6 +214,126 @@ export async function fetchTaskStream(baseUrl: string, petId: string): Promise<T
   };
 }
 
+/** 携带原文的消息行元素（渲染态切换时按 __dshRaw 重新渲染） */
+type RawMsgEl = HTMLElement & { __dshRaw?: string };
+
+/** HTML 转义 —— 渲染 Markdown 之前先把回答内容整体转义（回答不可信，防 HTML/脚本注入） */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** 行内语法：先挖出 `行内代码` 占位保护，再做加粗/斜体/删除线/链接，最后还原占位 */
+function renderInline(s: string): string {
+  const codes: string[] = [];
+  const masked = s.replace(/`([^`]*)`/g, (_m, code: string) => {
+    codes.push('<code>' + code + '</code>');
+    return '\uE000' + (codes.length - 1) + '\uE001'; // 私用区占位（正文几乎不可能出现）
+  });
+  const out = masked
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/(^|[^\w*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/(^|[^\w~])~~([^~\s][^~]*?)~~/g, '$1<del>$2</del>')
+    .replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      (_m, text: string, url: string) =>
+        '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + text + '</a>',
+    );
+  return out.replace(/\uE000(\d+)\uE001/g, (_m, i: string) => codes[Number(i)]);
+}
+
+/** 任务框内的轻量 Markdown 渲染（零依赖，浏览器/桌面共用同一份）：
+ *  - 全部内容先经 escapeHtml 转义，语法变换只产出本文件写死的标签（白名单式失败安全）；
+ *  - 支持：标题、加粗/斜体/删除线、行内代码、围栏代码块、无序/有序列表、引用、
+ *    分隔线、链接（仅 http/https，新窗口打开）；
+ *  - 未覆盖的语法按纯文本原样显示，绝不因渲染失败而丢字。 */
+export function renderMarkdown(src: string): string {
+  const lines = src.replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  let inCode = false;
+  let codeBuf: string[] = [];
+  let para: string[] = [];
+  let listBuf: string[] = [];
+  let listOrdered = false;
+
+  const flushPara = (): void => {
+    if (!para.length) return;
+    out.push('<p>' + para.map(renderInline).join('<br>') + '</p>');
+    para = [];
+  };
+  const flushList = (): void => {
+    if (!listBuf.length) return;
+    out.push(listOrdered ? '<ol>' + listBuf.join('') + '</ol>' : '<ul>' + listBuf.join('') + '</ul>');
+    listBuf = [];
+    listOrdered = false;
+  };
+
+  for (const rawLine of lines) {
+    if (/^\s*```/.test(rawLine)) {
+      flushPara();
+      flushList();
+      if (inCode) {
+        out.push('<pre><code>' + codeBuf.join('\n') + '</code></pre>');
+        codeBuf = [];
+        inCode = false;
+      } else {
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      codeBuf.push(escapeHtml(rawLine));
+      continue;
+    }
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      flushPara();
+      flushList();
+      continue;
+    }
+    const heading = rawLine.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushPara();
+      flushList();
+      const level = heading[1].length;
+      out.push('<h' + level + '>' + renderInline(escapeHtml(heading[2])) + '</h' + level + '>');
+      continue;
+    }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushPara();
+      flushList();
+      out.push('<hr>');
+      continue;
+    }
+    const li = rawLine.match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
+    if (li) {
+      flushPara();
+      const ordered = /^\d+[.)]$/.test(li[2]);
+      if (listBuf.length && ordered !== listOrdered) flushList();
+      listOrdered = ordered;
+      listBuf.push('<li>' + renderInline(escapeHtml(li[3])) + '</li>');
+      continue;
+    }
+    if (/^>\s?/.test(trimmed)) {
+      flushPara();
+      flushList();
+      out.push('<blockquote>' + renderInline(escapeHtml(trimmed.replace(/^>\s?/, ''))) + '</blockquote>');
+      continue;
+    }
+    flushList();
+    para.push(escapeHtml(rawLine));
+  }
+  if (inCode) out.push('<pre><code>' + codeBuf.join('\n') + '</code></pre>');
+  flushPara();
+  flushList();
+  return out.join('');
+}
+
 /** 弹窗样式 —— 两端注入同一份（与 CHAT_CSS 同模式；视觉对齐浏览器/桌面）。
  *  窗口形态：标题栏 + 工作区/会话行 + 滚动消息区 + 底部输入。字体与气泡同款（上首软糖体）。 */
 export const TASK_CSS = [
@@ -248,6 +368,24 @@ export const TASK_CSS = [
   // 折叠态：一行省略号；展开态：内容超高时消息内部滚动（不把预览区撑爆）
   '.dsh-pet-task-msg.is-collapsed{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:1.8em}',
   '.dsh-pet-task-msg:not(.is-collapsed){max-height:260px;overflow-y:auto}',
+  // Markdown 渲染态（展开的回答）：容器改为正常空白流，块级元素自带排版
+  '.dsh-pet-task-msg.dsh-pet-task-md{white-space:normal}',
+  '.dsh-pet-task-md p{margin:0 0 6px}.dsh-pet-task-md p:last-child{margin-bottom:0}',
+  '.dsh-pet-task-md h1,.dsh-pet-task-md h2,.dsh-pet-task-md h3{line-height:1.35;margin:8px 0 4px}',
+  '.dsh-pet-task-md h1{font-size:16px}.dsh-pet-task-md h2{font-size:15px}.dsh-pet-task-md h3{font-size:14px}',
+  '.dsh-pet-task-md h1:first-child,.dsh-pet-task-md h2:first-child,.dsh-pet-task-md h3:first-child{margin-top:0}',
+  '.dsh-pet-task-md ul,.dsh-pet-task-md ol{margin:0 0 6px;padding-left:18px}',
+  '.dsh-pet-task-md li{margin:2px 0}',
+  '.dsh-pet-task-md code{font-family:Consolas,"Courier New",monospace;font-size:.92em;',
+  'background:rgba(0,0,0,.06);padding:0 4px;border-radius:4px}',
+  '.dsh-pet-task-md pre{margin:0 0 6px;padding:6px 8px;background:rgba(0,0,0,.05);border-radius:6px;',
+  'overflow-x:auto;white-space:pre-wrap;font-size:12.5px;font-family:Consolas,"Courier New",monospace}',
+  '.dsh-pet-task-md pre code{background:none;padding:0}',
+  '.dsh-pet-task-md blockquote{margin:0 0 6px;padding:2px 10px;border-left:3px solid rgba(0,0,0,.15);',
+  'color:rgba(43,43,43,.72)}',
+  '.dsh-pet-task-md hr{border:none;border-top:1px solid rgba(0,0,0,.12);margin:6px 0}',
+  '.dsh-pet-task-md a{color:#4a7fc1}',
+  '.dsh-pet-task-md strong{font-weight:700}',
   // 折叠/展开指示符（仅对话消息；占位行不参与）
   '.dsh-pet-task-msg-user.is-collapsed::before,.dsh-pet-task-msg-assistant.is-collapsed::before',
   '{content:"▸ " ;color:rgba(43,43,43,.45)}',
@@ -524,19 +662,34 @@ export function mountTaskDialog(opts: {
     }
   };
 
+  /** 按当前折叠态渲染一条消息：折叠 → 纯文本单行省略；展开 → 回答渲染 Markdown（用户输入保持原文原样） */
+  const renderEntry = (el: RawMsgEl, role: 'user' | 'assistant'): void => {
+    const raw = el.__dshRaw ?? '';
+    if (el.classList.contains('is-collapsed') || role === 'user') {
+      el.textContent = raw;
+      el.classList.remove('dsh-pet-task-md');
+    } else {
+      el.innerHTML = renderMarkdown(raw);
+      el.classList.add('dsh-pet-task-md');
+    }
+  };
+
   /** 追加一条消息行（用户/回答）：collapsed=true 折叠成一行；点击整行切换折叠/展开。
    *  纯行操作（不折叠当前输出、不维护 currentOutputEl——那些由调用方按轮次语义处理）。 */
   const appendLine = (role: 'user' | 'assistant', text: string, collapsed: boolean): HTMLElement => {
     ensureArea();
-    const el = document.createElement('div');
+    const el = document.createElement('div') as RawMsgEl;
     el.className = 'dsh-pet-task-msg ' + (role === 'user' ? 'dsh-pet-task-msg-user' : 'dsh-pet-task-msg-assistant');
-    el.textContent = text;
+    el.__dshRaw = text;
     el.classList.toggle('is-collapsed', collapsed);
     el.title = collapsed ? '点击展开' : '点击折叠';
     el.addEventListener('click', () => {
       const now = el.classList.toggle('is-collapsed');
       el.title = now ? '点击展开' : '点击折叠';
+      renderEntry(el, role);
+      msgs.scrollTop = msgs.scrollHeight;
     });
+    renderEntry(el, role);
     msgs.appendChild(el);
     entryEls.push({ el, role });
     clampPosition();
@@ -569,7 +722,9 @@ export function mountTaskDialog(opts: {
       currentOutputEl = appendLine('assistant', text, false);
       return;
     }
-    currentOutputEl.textContent += '\n\n' + text; // 连续输出：并入同一条
+    const el = currentOutputEl as RawMsgEl;
+    el.__dshRaw = (el.__dshRaw ?? '') + '\n\n' + text; // 连续输出：并入同一条
+    renderEntry(el, 'assistant');
     clampPosition();
     msgs.scrollTop = msgs.scrollHeight;
   };
@@ -783,7 +938,8 @@ export function mountTaskDialog(opts: {
         addUserInput(msgsList[lastUserIdx].text);
         for (let i = lastUserIdx + 1; i < msgsList.length; i++) {
           const m = msgsList[i];
-          if (m.role === 'user') addUserInput(m.text); // 防御：lastUserIdx 已是最后一条，理论不达
+          if (m.role === 'user')
+            addUserInput(m.text); // 防御：lastUserIdx 已是最后一条，理论不达
           else addOutput(m.text, false); // 连续输出并入同一条
         }
         clampPosition();
