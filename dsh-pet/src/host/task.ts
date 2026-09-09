@@ -202,6 +202,32 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
     }
   };
 
+  /** Agent 默认模型（Web 网关同款 agentOptions 种子）。
+   *  rc.6 部署人设模板含 {{model}}（"You are a coding agent powered by the {{model}} model…"），
+   *  Agent 无模型时系统提示词渲染直接抛错、整轮失败（turn/end code=UNKNOWN）——
+   *  宠物直连 ctx.agents 绕过了 Web 网关的装配（agentOptions 种子 + 模型选择装配），
+   *  必须在 create/resume 时自行播种；服务缺失/读取失败不播种（失败在回合层显式报错，不静默伪造）。 */
+  const defaultAgentOptions = (): { provider: string; model: string } | undefined => {
+    try {
+      const svc = (ctx.agentDefaultModel ?? ctx.get?.('agentDefaultModel')) as
+        | { currentSelection?: () => { provider?: unknown; model?: unknown } | undefined }
+        | undefined;
+      const sel = svc?.currentSelection?.();
+      if (
+        sel &&
+        typeof sel.provider === 'string' &&
+        sel.provider.length > 0 &&
+        typeof sel.model === 'string' &&
+        sel.model.length > 0
+      ) {
+        return { provider: sel.provider, model: sel.model };
+      }
+    } catch {
+      /* 读取失败：不播种（见上注释） */
+    }
+    return undefined;
+  };
+
   /** 工作区注册表（可选服务；多处经它读工作区/成员会话）——结构型最小面，避免跨版本类型依赖 */
   interface WorkspaceEntityLike {
     id?: unknown;
@@ -357,7 +383,13 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
     const meta: Record<string, unknown> = {};
     if (cwd) meta.cwd = cwd;
     if (conf.agentPreset) meta.agentPreset = conf.agentPreset;
-    const handle = await ctx.agents.create({ sessionId, meta });
+    // 播种默认模型（Web 网关同款）：rc.6 部署人设含 {{model}}，无模型则整轮失败（UNKNOWN）
+    const agentOptions = defaultAgentOptions();
+    const handle = await ctx.agents.create({
+      sessionId,
+      meta,
+      ...(agentOptions ? { agentOptions } : {}),
+    });
     handles.set(sessionId, handle);
     if (ws && typeof ws.attachSession === 'function') {
       try {
@@ -385,7 +417,12 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
         return { agent: live, sessionId: binding.sessionId };
       }
       try {
-        const handle = await ctx.agents.resume({ resumeSessionId: binding.sessionId });
+        // 播种默认模型（Web 网关同款）：宠物直连 resume 无网关装配，{{model}} 人设变量必须自行供给
+        const agentOptions = defaultAgentOptions();
+        const handle = await ctx.agents.resume({
+          resumeSessionId: binding.sessionId,
+          ...(agentOptions ? { agentOptions } : {}),
+        });
         handles.set(binding.sessionId, handle);
         setActive(petId, binding.sessionId, binding.workspaceId);
         return { agent: handle.agent, sessionId: binding.sessionId };
@@ -616,7 +653,12 @@ export function createTaskBridge(ctx: any, options: TaskBridgeOptions): TaskBrid
         let agent = ctx.agents.get(bindSessionId);
         if (!agent) {
           try {
-            const handle = await ctx.agents.resume({ resumeSessionId: bindSessionId });
+            // 播种默认模型（与 ensureSession 同款理由：宠物直连 resume 无网关装配）
+            const agentOptions = defaultAgentOptions();
+            const handle = await ctx.agents.resume({
+              resumeSessionId: bindSessionId,
+              ...(agentOptions ? { agentOptions } : {}),
+            });
             handles.set(bindSessionId, handle);
             agent = handle.agent;
           } catch (e) {
