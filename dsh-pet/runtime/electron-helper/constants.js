@@ -17,9 +17,11 @@ const CONFIG = {
 // bridge 模式（DSH_PET_BRIDGE=1）：请求走自定义 scheme，经 Electron 主进程转宿主管道——
 // 绕开 DSH Desktop 2.0.3+ 的浏览器访问闸门（只放行带令牌的请求，插件自拉进程的裸 HTTP 全 403）
 const BRIDGE = params.get('bridge') === '1';
-// 任务对话窗模式（dialog=task）：独立全屏透明窗只承载任务对话框（可全屏拖动、随宠物窗口跟随），
-// 不启动宠物本体（sprite/轮询全部跳过）
-const DIALOG = params.get('dialog') === 'task';
+// 弹窗模式（dialog=task|settings）：独立全屏透明窗只承载一个共享组件
+// （不用宠物小窗的内嵌弹窗——小窗只有宠物包围盒 + 半只宠物宽的余量，panel 必被裁剪；
+//   全屏窗还能避免"宠物漫游把面板一起拖走"）。两种弹窗都跳过宠物本体与轮询。
+const DIALOG_KIND = params.get('dialog') || '';
+const DIALOG = DIALOG_KIND === 'task' || DIALOG_KIND === 'settings';
 const DIALOG_PET = params.get('pet') || '';
 const DIALOG_PET_NAME = params.get('petName') || '';
 // 视口 = 主屏工作区（窗口只是宠物的一块局部画布）：漫游边界/角落定位/位置比例换算用它
@@ -63,6 +65,7 @@ window.__dshPetDebug = {
   menuOpen: false,
   chatOpen: false,
   taskOpen: false,
+  settingsOpen: false,
   bootAt: Date.now(),
 };
 window.addEventListener('error', (event) => {

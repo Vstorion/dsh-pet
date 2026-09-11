@@ -31,18 +31,13 @@ export interface MenuLeaf {
   anim?: string;
   /** 自定义动作：open-site=打开网站 / show-balance=查看余额；whisper=立即碎碎念一句；
    * chat=打开闲聊弹窗；task=打开任务对话窗（向 DSH 派发任务）；home=回到初始位置；
+   * settings=打开桌宠设置面板（字段与 DSH Web「桌宠配置」页一致：宠物列表/名字/大小/位置/
+   * 显示位置/角色透明度/余额/碎碎念/工作状态/系统通知，两端共用同一份组件）；
    * hide-pet=隐藏人物（桌面端专属）；restart-update=重启更新（关闭 DSH → 更新本体 → 重启，
    * 两端共用：仅当启动检测 check-update.ps1 发现 DSH 本体有更新时显示）。
    * 手动触发均不受 whisperEnabled 影响（该字段只关自动周期轮询） */
   action?:
-    | 'open-site'
-    | 'show-balance'
-    | 'whisper'
-    | 'chat'
-    | 'task'
-    | 'home'
-    | 'hide-pet'
-    | 'restart-update';
+    'open-site' | 'show-balance' | 'whisper' | 'chat' | 'task' | 'home' | 'settings' | 'hide-pet' | 'restart-update';
 }
 
 /** 分支：带子菜单的项 */

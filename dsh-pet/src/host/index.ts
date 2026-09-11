@@ -575,7 +575,7 @@ export function apply(ctx: any): void {
               status: 400,
               obj: {
                 error:
-                  'invalid pet config: expected { pets:[{name?,id,size,balanceEnabled,display,position:{corner,marginX,marginY}}] }（display 为 web/desktop/both/none 之一；可选顶层 notificationsEnabled 布尔）',
+                  'invalid pet config: expected { pets:[{name?,id,size,opacity?,balanceEnabled,display,position:{corner,marginX,marginY}}] }（display 为 web/desktop/both/none 之一；opacity 可选 0.1~1；可选顶层 notificationsEnabled 布尔）',
               },
             };
           }

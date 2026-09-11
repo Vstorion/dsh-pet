@@ -36,6 +36,12 @@ const CORNER_SET: ReadonlySet<string> = new Set(CORNERS);
 const PET_DISPLAYS = ['web', 'desktop', 'both', 'none'] as const;
 const PET_DISPLAY_SET: ReadonlySet<string> = new Set(PET_DISPLAYS);
 
+/** 角色透明度边界（与 src/shared/config.ts 的 OPACITY_MIN/MAX 必须保持一致——本模块自包含，
+ *  不 import src/shared；1 = 完全不透明，0.1 = 下限，再低角色近乎隐形） */
+const OPACITY_MIN = 0.1;
+const OPACITY_MAX = 1;
+const OPACITY_DEFAULT = 1;
+
 /** id 禁用的字符（Windows 文件名保留符 + 控制字符，防配置值逃逸文件路径） */
 // eslint-disable-next-line no-control-regex
 const ID_FORBIDDEN = /[\\/:\x00-\x1f]/;
@@ -305,6 +311,17 @@ function petBool(own: unknown, def: unknown, label: string, field: string, id: s
   return Boolean(def);
 }
 
+/** 宠物透明度（0.1~1）：缺失 → 静默取默认；显式写但越界/非法 → 告警 + 默认 */
+function petOpacity(own: unknown, def: unknown, label: string, id: string): number {
+  const d = Number(def);
+  const fallback = Number.isFinite(d) && d >= OPACITY_MIN && d <= OPACITY_MAX ? d : OPACITY_DEFAULT;
+  if (own === undefined || own === null) return fallback;
+  const n = Number(own);
+  if (Number.isFinite(n) && n >= OPACITY_MIN && n <= OPACITY_MAX) return n;
+  warnOnce(`${label}:opacity:${id}`, `宠物「${id}」的 opacity 非法，已取默认值`);
+  return fallback;
+}
+
 /** 宠物实例字段取白名单枚举；缺失 → 静默取默认；显式写但非法 → 告警 + 默认 */
 function petEnum(
   own: unknown,
@@ -385,6 +402,7 @@ function mergePet(
     id,
     name,
     size: petNumber(p.size, base.size, 1, label, 'size', id),
+    opacity: petOpacity(p.opacity, base.opacity, label, id),
     balanceEnabled: petBool(p.balanceEnabled, base.balanceEnabled, label, 'balanceEnabled', id),
     whisperEnabled: petBool(p.whisperEnabled, base.whisperEnabled, label, 'whisperEnabled', id),
     workStatusEnabled: petBool(p.workStatusEnabled, base.workStatusEnabled, label, 'workStatusEnabled', id),
@@ -454,6 +472,8 @@ export function findPetInstance(
 
 /**
  * 保存用户层（PUT /config）：更新 main-config.json，接受可编辑字段（pets + notificationsEnabled）。
+ * 每个宠物实例的可编辑字段：id / name / size / opacity（角色透明度 0.1~1）/ balanceEnabled /
+ * whisperEnabled / workStatusEnabled / display / position。
  * 编辑语义：**非白名单顶层字段（physics / whisperPrompt / chatMemoryRounds / eventsRefreshSec 等）
  * 从 `existing`（当前磁盘上的用户文件原对象）原样透传保留**——
  * 用户手动编辑的精调配置不会被设置页保存抹掉（旧实现是纯白名单重建，会整体覆盖丢失）。
@@ -477,6 +497,9 @@ export function saveUserConfig(
     if (!id || id.length > 64 || ID_FORBIDDEN.test(id)) return null;
     const size = Number(pp.size);
     if (!Number.isFinite(size) || size <= 0) return null;
+    // 角色透明度（0.1~1）：缺省 1（兼容旧配置/旧设置页提交的裸实例）；越界/非法 → 拒绝整包
+    const opacity = pp.opacity === undefined || pp.opacity === null ? OPACITY_DEFAULT : Number(pp.opacity);
+    if (!Number.isFinite(opacity) || opacity < OPACITY_MIN || opacity > OPACITY_MAX) return null;
     // 显示名：可重复不校验唯一；缺失/留空/非字符串 → 按该宠物 id 处理（兼容旧配置）并告警
     let name = typeof pp.name === 'string' ? pp.name.trim() : '';
     if (!name) {
@@ -506,6 +529,7 @@ export function saveUserConfig(
       id,
       name,
       size,
+      opacity,
       balanceEnabled,
       whisperEnabled,
       workStatusEnabled,

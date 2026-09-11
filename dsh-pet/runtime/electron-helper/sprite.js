@@ -111,6 +111,10 @@ class PetSprite {
     this.chatOpen = false;
     this.taskClose = null;
     this.taskOpen = false;
+    // 设置面板（shared 组件）：回退路径下在窗口内嵌挂载时的句柄与穿透守卫
+    // （主路径是主进程开独立全屏窗，本窗口不持有面板）
+    this.settingsClose = null;
+    this.settingsOpen = false;
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
@@ -121,6 +125,10 @@ class PetSprite {
     const stage = document.createElement('div');
     stage.className = 'pet-stage';
     stage.style.transform = 'translateY(' + this.bottomPad + 'px)';
+    // 角色透明度（配置字段 pets[i].opacity，0.1~1；S.clampOpacity 收敛非法值）：
+    // 压在 stage 上——只作用于角色与命中区；气泡是 el 下的兄弟节点，保持不透明（可读性）。
+    this.opacity = S.clampOpacity(pet.opacity);
+    stage.style.opacity = String(this.opacity);
     this.stage = stage;
     this.videoA = document.createElement('video');
     this.videoA.className = 'pet-video is-front';
@@ -177,9 +185,9 @@ class PetSprite {
       'mouseleave',
       () => {
         // 光标离开窗口：菜单若开着立刻收起（菜单是窗口内 DOM，离开即不可达），再恢复穿透；
-        // 对话/任务弹窗开着则不恢复——弹窗是窗口内 DOM，鼠标还要回来点输入框（与 menuOpen 同守卫）
+        // 对话/任务/设置弹窗开着则不恢复——弹窗是窗口内 DOM，鼠标还要回来点输入框（与 menuOpen 同守卫）
         this.closeMenu();
-        if (!this.chatOpen && !this.taskOpen) this.setInteractive(false);
+        if (!this.chatOpen && !this.taskOpen && !this.settingsOpen) this.setInteractive(false);
       },
       { signal: ac.signal },
     );
@@ -230,6 +238,10 @@ class PetSprite {
     if (this.taskClose) {
       this.taskClose();
       this.taskClose = null;
+    }
+    if (this.settingsClose) {
+      this.settingsClose();
+      this.settingsClose = null;
     }
     this.closeMenu();
     this.stopThrow();
@@ -822,8 +834,8 @@ class PetSprite {
       this.setInteractive(true);
       return;
     }
-    // 右键菜单/对话/任务弹窗开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
-    if (this.menuOpen || this.chatOpen || this.taskOpen) {
+    // 右键菜单/对话/任务/设置弹窗开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
+    if (this.menuOpen || this.chatOpen || this.taskOpen || this.settingsOpen) {
       this.setInteractive(true);
       return;
     }
@@ -881,6 +893,7 @@ class PetSprite {
       { label: '碎碎念', action: 'whisper' },
       { label: '任务', action: 'task' },
       { label: '闲聊', action: 'chat' },
+      { label: '设置', action: 'settings' },
       { label: '回到初始位置', action: 'home' },
       { label: '隐藏人物', action: 'hide-pet' },
     );
@@ -956,6 +969,11 @@ class PetSprite {
     }
     if (leaf.action === 'task') {
       this.showTaskFromMenu(); // 打开任务对话窗（host 进程内直调 DSH Agent 派发任务）
+      return;
+    }
+    if (leaf.action === 'settings') {
+      // 打开设置面板（独立全屏透明窗，主进程承载；面板字段与 DSH Web「桌宠配置」设置页一致）
+      this.openSettingsFromMenu();
       return;
     }
     if (leaf.action === 'home') {
@@ -1057,7 +1075,7 @@ class PetSprite {
         this.chatClose = null;
         this.chatOpen = false;
         window.__dshPetDebug.chatOpen = false;
-        if (!this.menuOpen) this.setInteractive(false); // 弹窗关了且无菜单：恢复命中区穿透
+        if (!this.menuOpen && !this.settingsOpen) this.setInteractive(false); // 弹窗关了且无菜单/设置面板：恢复命中区穿透
       },
     });
     this.chatClose = m.close;
@@ -1130,13 +1148,54 @@ class PetSprite {
         this.taskClose = null;
         this.taskOpen = false;
         window.__dshPetDebug.taskOpen = false;
-        if (!this.menuOpen && !this.chatOpen) this.setInteractive(false); // 弹窗关了且无菜单/闲聊：恢复命中区穿透
+        if (!this.menuOpen && !this.chatOpen && !this.settingsOpen) this.setInteractive(false); // 弹窗关了且无菜单/闲聊/设置面板：恢复命中区穿透
       },
     });
     this.taskClose = m.close;
     this.taskOpen = true; // 穿透守卫：弹窗期间整窗保持可交互
     window.__dshPetDebug.taskOpen = true;
     this.setInteractive(true);
+  }
+
+  // 「设置」菜单：桌宠设置面板（字段与 DSH Web「桌宠配置」设置页一致：宠物列表 / 名字 / 大小 /
+  // 位置 / 显示位置 / 角色透明度 / 余额 / 碎碎念 / 工作状态 / 系统通知 + 保存 / 恢复默认）。
+  // 面板由主进程开**独立全屏透明窗**承载（宠物小窗只有半只宠物宽的余量，装不下表单，
+  // 且宠物漫游会把内嵌面板拖走）；窗内渲染端用 shared 的 mountSettingsDialog（与浏览器同一份）。
+  // 保存走 host PUT /config —— host 随即 syncDesktop() 重载辅助进程，宠物带新透明度重建。
+  openSettingsFromMenu() {
+    if (window.petBridge && window.petBridge.openSettingsDialog) {
+      window.petBridge.openSettingsDialog({ petId: this.pet.id, petName: this.pet.name });
+      return;
+    }
+    // 回退（无主进程支持的环境）：窗口内嵌挂载共享组件（位置随右键点，超出视口自动夹回）
+    this.showSettingsInline();
+  }
+
+  /** 回退路径：在宠物小窗内嵌挂载设置面板（无 openSettingsDialog 桥时用；可能被小窗裁剪） */
+  showSettingsInline() {
+    if (this.settingsClose) {
+      this.settingsClose();
+      this.settingsClose = null;
+      this.settingsOpen = false;
+      return; // 已开着：再点一次关闭
+    }
+    const r = this.hit.getBoundingClientRect();
+    const m = S.mountSettingsDialog({
+      baseUrl: BASE,
+      x: Math.max(4, r.right + 6),
+      y: Math.max(4, r.top + 6),
+      onSaved: () => console.info('[dsh-pet] 设置已保存（桌面辅助进程将重载以应用新配置）'),
+      onClose: () => {
+        this.settingsClose = null;
+        this.settingsOpen = false;
+        window.__dshPetDebug.settingsOpen = false;
+        if (!this.menuOpen && !this.chatOpen && !this.taskOpen) this.setInteractive(false);
+      },
+    });
+    this.settingsClose = m.close;
+    this.settingsOpen = true;
+    window.__dshPetDebug.settingsOpen = true;
+    this.setInteractive(true); // 穿透守卫：面板是窗口内 DOM，期间整窗保持可交互
   }
 
   // 「回到初始位置」菜单：停掉漫游/移动，清掉拖拽/漫游留下的会话位置，回到配置角落

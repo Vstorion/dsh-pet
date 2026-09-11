@@ -10,7 +10,7 @@
  *
  * 样式对齐官方设置页：max-width 720px、全走 --dsw-alias-* 语义 token（主题跟随）。
  */
-import { PET_DISPLAYS } from '../shared/config';
+import { OPACITY_MAX, OPACITY_MIN, PET_DISPLAYS } from '../shared/config';
 import { NOTIFY_ICONS, reloadNotifications, requestNotificationPermission } from './notify';
 import type { Corner, Pet, PetDisplay } from '../shared/types';
 import type { ChangeEvent, CSSProperties, Dispatch, FunctionComponent, SetStateAction } from 'react';
@@ -46,6 +46,8 @@ export const zh = {
   emptyPets: '暂无宠物，点击「添加宠物」创建。',
   sizeLabel: '大小（宽度 px）',
   sizeHint: '高度自动 = 宽度 × 9/16。',
+  opacityLabel: '角色透明度',
+  opacityHint: '只改变角色本身（10%~100%）；气泡/右键菜单/设置面板保持不透明，不影响可读性。',
   nameLabel: '名字',
   nameHint: '显示名：鼠标悬浮宠物时弹出，也会加进 AI 人设（你的名字是 X）。可重复，留空按宠物 id 处理。',
   balanceEnabled: '余额功能',
@@ -107,6 +109,8 @@ export const en = {
   emptyPets: 'No pets yet — click "Add pet" to create one.',
   sizeLabel: 'Size (width px)',
   sizeHint: 'Height is automatic = width × 9/16.',
+  opacityLabel: 'Character opacity',
+  opacityHint: 'Applies to the character only (10%–100%); bubbles, the context menu and dialogs stay opaque.',
   nameLabel: 'Name',
   nameHint:
     'Shown on hover and added to AI personas ("your name is X"). Duplicates allowed; empty falls back to the pet id.',
@@ -387,6 +391,8 @@ export function makePetConfigSection(rt: {
           // 新宠物默认名字 = 自己的新 id（与「缺失 name 按 id 处理」同一语义，避免继承模板名字造成同名）
           name: id,
           size: tpl.size,
+          // 透明度随模板（缺失按 1 = 完全不透明，兼容旧配置）
+          opacity: typeof tpl.opacity === 'number' ? tpl.opacity : 1,
           balanceEnabled: tpl.balanceEnabled,
           whisperEnabled: tpl.whisperEnabled,
           workStatusEnabled: tpl.workStatusEnabled,
@@ -606,6 +612,42 @@ export function makePetConfigSection(rt: {
                   children: [
                     t('marginY'),
                     field('marginY', cur.position.marginY, (v) => updateSel({ position: { marginY: v } }), '120px'),
+                  ],
+                }),
+                h('label', {
+                  style: {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    fontSize: '12px',
+                    color: 'var(--dsw-alias-label-secondary)',
+                  },
+                  children: [
+                    t('opacityLabel'),
+                    h('div', {
+                      style: { display: 'flex', alignItems: 'center', gap: '8px', width: '250px' },
+                      children: [
+                        h('input', {
+                          type: 'range',
+                          min: String(Math.round(OPACITY_MIN * 100)),
+                          max: String(Math.round(OPACITY_MAX * 100)),
+                          step: '1',
+                          value: String(Math.round((cur.opacity ?? 1) * 100)),
+                          disabled: busy,
+                          onChange: (e: ChangeEvent<HTMLInputElement>) =>
+                            updateSel({ opacity: Number(e.target.value) / 100 }),
+                          style: { flex: 1, accentColor: 'var(--dsw-alias-state-business-primary)' },
+                        }),
+                        h('span', {
+                          style: { fontSize: '12px', minWidth: '42px', textAlign: 'right' },
+                          children: Math.round((cur.opacity ?? 1) * 100) + '%',
+                        }),
+                      ],
+                    }),
+                    h('span', {
+                      style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
+                      children: t('opacityHint'),
+                    }),
                   ],
                 }),
                 h('label', {

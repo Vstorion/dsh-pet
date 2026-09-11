@@ -55,6 +55,15 @@ contextBridge.exposeInMainWorld('petBridge', {
   closeTaskDialog(payload) {
     ipcRenderer.send('pet:close-task-dialog', payload);
   },
+  // ---- 设置面板（独立全屏透明窗口；面板居中，不随宠物窗口移动）----
+  // 打开：宠物窗口渲染端发来（右键「设置」）→ 主进程建全屏窗承载 mountSettingsDialog
+  openSettingsDialog(payload) {
+    ipcRenderer.send('pet:open-settings-dialog', payload);
+  },
+  // 关闭（面板点 × / Esc 时由面板窗渲染端发起，主进程销毁本窗）
+  closeSettingsDialog(payload) {
+    ipcRenderer.send('pet:close-settings-dialog', payload);
+  },
   // 订阅宠物窗口位置变化（主进程在 pet:set-bounds 时广播；对话窗据此更新跟随锚点）
   onPetBounds(cb) {
     ipcRenderer.on('pet:pet-bounds', (e, payload) => cb(payload));

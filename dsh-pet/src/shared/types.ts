@@ -75,6 +75,10 @@ export interface Pet {
    *  与 id 的区别：id 唯一、程序认它；name 给人看、可重复。缺失/留空按该宠物 id 处理并告警 */
   name: string;
   size: number;
+  /** 角色透明度（0.1~1，1 = 完全不透明；默认 1）：只作用于宠物角色本体，
+   *  气泡/右键菜单/弹窗一律不受影响（保证 UI 始终可读）。
+   *  缺失 → 合并器静默取内置默认；显式写但越界/非法 → 告警 + 默认 */
+  opacity: number;
   /** 是否启用余额功能：true=触发余额动画+显示余额气泡；false=该宠物完全禁用余额。缺失即配置错误 */
   balanceEnabled: boolean;
   /** 是否启用碎碎念：true=按 eventsRefreshSec.whisper 周期生成一句话并播碎碎念动画；false=禁用。

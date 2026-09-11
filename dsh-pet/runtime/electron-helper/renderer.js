@@ -110,8 +110,22 @@ function injectAssets() {
   document.head.appendChild(menuStyle);
 }
 
-// 任务对话窗模式：全屏透明窗只承载任务对话框（共享组件与浏览器/宠物窗内联版同一份）
-if (DIALOG) {
+// 设置面板模式（dialog=settings）：全屏透明窗只承载「桌宠设置」panel（shared 组件，
+// 字段与 DSH Web「桌宠配置」设置页一致）。面板居中、不随宠物窗口移动——
+// 用户对着表单改数值时，宠物在后台漫游不该把面板拽着跑。
+if (DIALOG_KIND === 'settings') {
+  injectAssets();
+  const m = S.mountSettingsDialog({
+    baseUrl: BASE,
+    // 保存/恢复默认：host 会 syncDesktop() 重载辅助进程（本窗随之销毁重建）——
+    // 无需额外刷新动作；onSaved 只在控制台留痕，便于排查"保存没生效"类问题
+    onSaved: () => console.info('[dsh-pet] 设置已保存，桌面辅助进程将重载'),
+    onClose: () => window.petBridge.closeSettingsDialog({ petId: DIALOG_PET }),
+  });
+  // 点击穿透翻转：光标悬停面板 → 可交互（能点选/打字）；离开 → 全窗穿透（透明区域不挡下层应用）
+  m.el.addEventListener('mouseenter', () => window.petBridge.setInteractive(true));
+  m.el.addEventListener('mouseleave', () => window.petBridge.setInteractive(false));
+} else if (DIALOG) {
   injectAssets();
   const petId = DIALOG_PET;
   const petName = DIALOG_PET_NAME;

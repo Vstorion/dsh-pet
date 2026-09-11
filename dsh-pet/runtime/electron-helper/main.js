@@ -63,6 +63,8 @@ if (BRIDGE) {
 const windows = new Map();
 /** 任务对话窗表：petId -> BrowserWindow（独立全屏透明窗，随宠物窗口跟随、可全屏拖动） */
 const taskWindows = new Map();
+/** 设置面板窗表：petId -> BrowserWindow（独立全屏透明窗，面板居中、不随宠物窗口移动） */
+const settingsWindows = new Map();
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
@@ -235,6 +237,9 @@ function showAllPetWindows() {
   for (const w of taskWindows.values()) {
     if (!w.isDestroyed() && !w.isVisible()) w.showInactive();
   }
+  for (const w of settingsWindows.values()) {
+    if (!w.isDestroyed() && !w.isVisible()) w.showInactive();
+  }
   rebuildTrayMenu();
 }
 function hideAllPetWindows() {
@@ -242,6 +247,9 @@ function hideAllPetWindows() {
     if (w.isVisible()) w.hide();
   }
   for (const w of taskWindows.values()) {
+    if (!w.isDestroyed() && w.isVisible()) w.hide();
+  }
+  for (const w of settingsWindows.values()) {
     if (!w.isDestroyed() && w.isVisible()) w.hide();
   }
   ensureTray();
@@ -457,16 +465,14 @@ app.whenReady().then(() => {
     windowIgnore.set(win.id, !interactive);
   });
 
-  // 打开任务对话窗：全屏透明独立窗口（对话框不再被宠物小窗裁剪，可全屏拖动）
-  function openTaskDialogWindow(payload) {
-    const p = payload && typeof payload === 'object' ? payload : {};
-    const petId = String(p.petId || '');
-    const petName = String(p.petName || petId);
-    const anchorX = Number(p.anchorX);
-    const anchorY = Number(p.anchorY);
-    const anchorWinX = Number(p.winX);
-    const anchorWinY = Number(p.winY);
-    if (!petId || ![anchorX, anchorY, anchorWinX, anchorWinY].every(Number.isFinite)) return;
+  /**
+   * 建一个**全屏透明弹窗窗**（任务对话窗 / 设置面板共用骨架）：
+   * 宠物小窗只有「宠物包围盒 + 半只宠物宽余量」，装不下表单/长对话（必被裁剪），
+   * 且宠物漫游时会把内嵌弹窗一起拖走——所以两类弹窗都用独立全屏窗承载，
+   * 由渲染端（renderer.js 的 dialog=<kind> 分支）挂载对应的 shared 组件。
+   * 默认整窗穿透（透明区不挡下层应用），渲染端悬停面板时经 pet:set-interactive 翻转。
+   */
+  function createDialogWindow(kind, petId, table, extraQuery) {
     const area = screen.getPrimaryDisplay().workArea;
     const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
     const win = new BrowserWindow({
@@ -495,34 +501,60 @@ app.whenReady().then(() => {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     win.webContents.setBackgroundThrottling(false);
     win.webContents.on('context-menu', (event) => event.preventDefault());
-    // 默认整窗穿透：透明区域不挡下层应用；渲染端悬停对话框时经 pet:set-interactive 翻转
     win.setIgnoreMouseEvents(true, { forward: true });
     windowIgnore.set(win.id, true);
     win.once('ready-to-show', () => win.show());
-    win.on('closed', () => taskWindows.delete(petId));
-    taskWindows.set(petId, win);
+    win.on('closed', () => table.delete(petId));
+    table.set(petId, win);
     win
       .loadFile('index.html', {
-        query: {
-          dialog: 'task',
-          pet: petId,
-          petName,
-          anchorX: String(anchorX),
-          anchorY: String(anchorY),
-          anchorWinX: String(anchorWinX),
-          anchorWinY: String(anchorWinY),
-          configUrl,
-          bridge: BRIDGE ? '1' : '0',
-          scale: '1',
-          petIndex: '0',
-          workAreaW: String(area.width),
-          workAreaH: String(area.height),
-        },
+        query: Object.assign(
+          {
+            dialog: kind,
+            pet: petId,
+            configUrl,
+            bridge: BRIDGE ? '1' : '0',
+            scale: '1',
+            petIndex: '0',
+            workAreaW: String(area.width),
+            workAreaH: String(area.height),
+          },
+          extraQuery,
+        ),
       })
       .catch((error) => {
-        console.error('[dsh-pet-desktop-helper] task dialog page load failed:', error);
+        console.error(`[dsh-pet-desktop-helper] ${kind} dialog page load failed:`, error);
         win.destroy();
       });
+    return win;
+  }
+
+  // 打开任务对话窗（可全屏拖动 + 随宠物窗口跟随：锚点 = 宠物身体命中区右上角屏幕坐标）
+  function openTaskDialogWindow(payload) {
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const petId = String(p.petId || '');
+    const petName = String(p.petName || petId);
+    const anchorX = Number(p.anchorX);
+    const anchorY = Number(p.anchorY);
+    const anchorWinX = Number(p.winX);
+    const anchorWinY = Number(p.winY);
+    if (!petId || ![anchorX, anchorY, anchorWinX, anchorWinY].every(Number.isFinite)) return;
+    createDialogWindow('task', petId, taskWindows, {
+      petName,
+      anchorX: String(anchorX),
+      anchorY: String(anchorY),
+      anchorWinX: String(anchorWinX),
+      anchorWinY: String(anchorWinY),
+    });
+  }
+
+  // 打开设置面板（全屏窗内居中；不随宠物窗口移动——改表单时宠物漫游不该把面板拽着跑）
+  function openSettingsDialogWindow(payload) {
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const petId = String(p.petId || '');
+    if (!petId) return;
+    const petName = String(p.petName || petId);
+    createDialogWindow('settings', petId, settingsWindows, { petName });
   }
 
   ipcMain.on('pet:open-task-dialog', (event, payload) => {
@@ -551,6 +583,25 @@ app.whenReady().then(() => {
   ipcMain.on('pet:close-task-dialog', (event, payload) => {
     const petId = String((payload && typeof payload === 'object' && payload.petId) || '');
     const win = taskWindows.get(petId);
+    if (win && !win.isDestroyed()) win.destroy();
+  });
+
+  // 打开设置面板窗（右键菜单「设置」）：已开着就前置复用，不重复建窗
+  ipcMain.on('pet:open-settings-dialog', (event, payload) => {
+    const petId = String((payload && typeof payload === 'object' && payload.petId) || '');
+    const existing = petId && settingsWindows.get(petId);
+    if (existing && !existing.isDestroyed()) {
+      existing.show();
+      existing.focus();
+      return;
+    }
+    openSettingsDialogWindow(payload);
+  });
+
+  // 关闭设置面板窗（面板点 × / Esc 时由面板窗渲染端发起）
+  ipcMain.on('pet:close-settings-dialog', (event, payload) => {
+    const petId = String((payload && typeof payload === 'object' && payload.petId) || '');
+    const win = settingsWindows.get(petId);
     if (win && !win.isDestroyed()) win.destroy();
   });
 

@@ -6,7 +6,7 @@
 // 纯逻辑（选择/移动几何/余额/拍平）来自 src/shared —— 与桌面模式共用同一份源码。
 import { pick, rollKind, pickCategoryAction } from '../shared/pickers';
 import { planMove } from '../shared/motion';
-import { flattenConfigPets, isWebVisible } from '../shared/config';
+import { flattenConfigPets, isWebVisible, clampOpacity } from '../shared/config';
 import { balanceEventIndex, balancePercent, fetchBalanceState, type BalanceState } from '../shared/balance';
 import { fetchWhisperState, fetchWhisperTrigger } from '../shared/whisper';
 import { WORK_STATUS_INDEX, fetchWorkStatus, type WorkStatusSnapshot } from '../shared/work-status';
@@ -25,6 +25,8 @@ import {
 // 对话弹窗：与桌面共用同一份组件（数据经 host /chat 读写同一份记忆）
 import { mountChatDialog } from '../shared/chat';
 import { mountTaskDialog } from '../shared/task';
+// 设置面板（右键「设置」）：与桌面共用同一份组件，字段与 DSH Web「桌宠配置」设置页一致
+import { mountSettingsDialog } from '../shared/settings-dialog';
 import { petBridge } from './settings';
 // 拖拽抛掷物理（弹簧跟手 + 甩抛 + 重力反弹）：两端共用同一份纯计算（src/shared/physics.ts）
 import {
@@ -120,6 +122,7 @@ export function makePetUI(rt: {
     workStatus,
     workStatusTick,
     arena,
+    reload,
   }: {
     cfg: RuntimePet;
     balance: BalanceState | null;
@@ -127,6 +130,8 @@ export function makePetUI(rt: {
     workStatus: WorkStatusSnapshot | null;
     workStatusTick: number;
     arena: ReactNS.MutableRefObject<{ slots: Record<string, PetCollisionSlot> }>;
+    /** 重拉成品配置并重渲染（设置面板保存/恢复默认后调用，即时生效） */
+    reload: () => void;
   }) {
     // ---- 尺寸（由配置传入；容器/设置页更新后即时跟随）----
     const [size, setSize] = useState(cfg.size);
@@ -167,6 +172,8 @@ export function makePetUI(rt: {
     // 对话弹窗（与桌面共用 shared 组件）：当前挂载的 close() 句柄，卸载/重开前清理
     const chatRef = useRef<{ close: () => void } | null>(null);
     const taskRef = useRef<{ close: () => void } | null>(null);
+    // 设置面板（与桌面共用 shared 组件）：当前挂载的 close() 句柄
+    const settingsRef = useRef<{ close: () => void } | null>(null);
 
     // 配置变化即时跟随（容器重新合并 / 设置页保存后通过 petBridge.sync 触发）
     useEffect(() => {
@@ -315,6 +322,10 @@ export function makePetUI(rt: {
         if (taskRef.current) {
           taskRef.current.close();
           taskRef.current = null;
+        }
+        if (settingsRef.current) {
+          settingsRef.current.close();
+          settingsRef.current = null;
         }
       },
       [],
@@ -1245,6 +1256,28 @@ export function makePetUI(rt: {
         });
         return;
       }
+      if (leaf.action === 'settings') {
+        // 设置面板（shared 组件，与桌面同一份）：字段与 DSH Web「桌宠配置」设置页一致
+        // （宠物列表 / 名字 / 大小 / 位置 / 显示位置 / 角色透明度 / 余额 / 碎碎念 / 工作状态 / 系统通知）。
+        // 保存走 host PUT /config（与 Web 设置页同一份写盘路径），成功后 reload 重拉成品即时重渲染。
+        if (settingsRef.current) {
+          settingsRef.current.close();
+          settingsRef.current = null;
+          return; // 已开着：点一次关闭（开/关切换，与双击任务窗同语义）
+        }
+        if (menuRef.current) menuRef.current.close();
+        const sRect = stageRef.current?.querySelector('.dsh-pet-hit')?.getBoundingClientRect();
+        settingsRef.current = mountSettingsDialog({
+          baseUrl: '/dsh-pet-7340',
+          x: sRect ? sRect.right + 6 : window.innerWidth - 420,
+          y: sRect ? sRect.top + 6 : 8,
+          onSaved: () => reload(),
+          onClose: () => {
+            settingsRef.current = null;
+          },
+        });
+        return;
+      }
       if (leaf.action === 'home') {
         // 回到初始位置：停漫游/移动/抛掷，清掉拖拽/漫游留下的会话位置，回配置角落
         stopThrow();
@@ -1308,6 +1341,7 @@ export function makePetUI(rt: {
         { label: '碎碎念', action: 'whisper' },
         { label: '任务', action: 'task' },
         { label: '闲聊', action: 'chat' },
+        { label: '设置', action: 'settings' },
         { label: '回到初始位置', action: 'home' },
         ...(updateAvailableRef.current ? [{ label: '重启更新', action: 'restart-update' } as MenuNode] : []),
         ...buildMenuTree(petAnims),
@@ -1344,7 +1378,12 @@ export function makePetUI(rt: {
     // ---- 渲染 ----
     // 左右透明边余量（视频盒内宠物身体居中）：夹取按"身体"贴边——宠物能走到屏幕边缘，身体永不越界
     const sideAllow = (HIT_BOX.x0 / 640) * size;
-    const stageStyle = dragging ? { transform: 'none' } : { transform: 'translateY(' + bottomPad + 'px)' };
+    // 角色透明度（配置字段，0.1~1）：只压在舞台（角色 + 命中区）上——
+    // 气泡/右键菜单/设置面板是 root 下舞台之外的兄弟节点，保持不透明（可读性）
+    const opacity = clampOpacity(cfg.opacity);
+    const stageStyle = dragging
+      ? { transform: 'none', opacity }
+      : { transform: 'translateY(' + bottomPad + 'px)', opacity };
     const rootStyle = customPos
       ? (() => {
           const rx = customPos.rx;
@@ -1457,52 +1496,60 @@ export function makePetUI(rt: {
     // 碎碎念：轮询下沉到每只 PetCard（各自按自己的周期拉取 /whisper?pet=<id>，人设/文本/触发全部独立），
     // 容器不再持有共享状态——与「每只宠物单独触发对话」的产品语义一致。
 
+    // 组合根存活标记：首次加载与设置面板保存后的重载共用同一份 applyConfig
+    const aliveRef = useRef(true);
+    /** 唯一配置入口：host readAllConfig 的成品聚合（绝对正确、字段填满），一次拉取，零校验零兜底。
+     *  启动加载与「设置面板保存/恢复默认后重载」走同一条路径（即时重渲染，无需刷新页面）。 */
+    const applyConfig = async (): Promise<void> => {
+      const r = await fetch('/dsh-pet-7340/config', { cache: 'no-store' });
+      if (!r.ok) throw new Error('config HTTP ' + r.status);
+      const merged = (await r.json()) as Record<string, Record<string, unknown>>;
+      const flattened = flattenConfigPets(merged);
+      if (!aliveRef.current) return;
+      mainConfRef.current = merged.main ?? {};
+      mainRefreshRef.current = (merged.main?.eventsRefreshSec as Record<string, number> | undefined) ?? {};
+      // 文件宠物单独留一份：设置页保存/恢复默认后自动合并回来
+      extrasRef.current = flattened.filter((p) => p.extra);
+      petBridge.current = flattened;
+      // 「添加宠物」模板 = main 条目 pets[0]（内置默认或用户覆盖后的主宠物）
+      petBridge.template = Array.isArray(merged.main?.pets) ? ((merged.main.pets as Pet[])[0] ?? undefined) : undefined;
+      petBridge.sync = (list: Pet[]) => {
+        // 设置页编辑的是 main 条目实例（裸实例，无条目级字段）：这里补吹 main 的
+        // 动画池/权重/周期（与 flattenConfigPets 同规格），再合并文件宠物
+        const mc = mainConfRef.current;
+        const filled: Pet[] = list.map((p) => ({
+          ...p,
+          animations: mc.animations as Animations,
+          animationWeights: mc.animationWeights as Weights,
+          eventsRefreshSec: mc.eventsRefreshSec as Record<string, number>,
+          assetRoot: 'main',
+          extra: false,
+        }));
+        const next = [...filled, ...extrasRef.current];
+        petBridge.current = next;
+        setPets(next);
+      };
+      setPets(flattened);
+      setReady(true);
+    };
+
     useEffect(() => {
-      let alive = true;
-      (async () => {
-        try {
-          // 唯一配置入口：host readAllConfig 的成品聚合（绝对正确、字段填满），一次拉取，零校验零兜底
-          const r = await fetch('/dsh-pet-7340/config');
-          if (!r.ok) throw new Error('config HTTP ' + r.status);
-          const merged = (await r.json()) as Record<string, Record<string, unknown>>;
-          const flattened = flattenConfigPets(merged);
-          if (!alive) return;
-          mainConfRef.current = merged.main ?? {};
-          mainRefreshRef.current = (merged.main?.eventsRefreshSec as Record<string, number> | undefined) ?? {};
-          // 文件宠物单独留一份：设置页保存/恢复默认后自动合并回来
-          extrasRef.current = flattened.filter((p) => p.extra);
-          petBridge.current = flattened;
-          // 「添加宠物」模板 = main 条目 pets[0]（内置默认或用户覆盖后的主宠物）
-          petBridge.template = Array.isArray(merged.main?.pets)
-            ? ((merged.main.pets as Pet[])[0] ?? undefined)
-            : undefined;
-          petBridge.sync = (list: Pet[]) => {
-            // 设置页编辑的是 main 条目实例（裸实例，无条目级字段）：这里补吹 main 的
-            // 动画池/权重/周期（与 flattenConfigPets 同规格），再合并文件宠物
-            const mc = mainConfRef.current;
-            const filled: Pet[] = list.map((p) => ({
-              ...p,
-              animations: mc.animations as Animations,
-              animationWeights: mc.animationWeights as Weights,
-              eventsRefreshSec: mc.eventsRefreshSec as Record<string, number>,
-              assetRoot: 'main',
-              extra: false,
-            }));
-            const next = [...filled, ...extrasRef.current];
-            petBridge.current = next;
-            setPets(next);
-          };
-          setPets(flattened);
-          setReady(true);
-        } catch (e) {
-          console.error('[dsh-pet] 配置加载失败', e); // 成品拉取失败：显式报错，不静默隐藏
-        }
-      })();
+      aliveRef.current = true;
+      void applyConfig().catch((e) => {
+        console.error('[dsh-pet] 配置加载失败', e); // 成品拉取失败：显式报错，不静默隐藏
+      });
       return () => {
-        alive = false;
+        aliveRef.current = false;
         petBridge.sync = () => {};
       };
     }, []);
+
+    /** 设置面板保存/恢复默认后重拉成品配置（宠物透明度等改动即时生效） */
+    const reloadConfig = (): void => {
+      void applyConfig().catch((e) => {
+        console.error('[dsh-pet] 配置重载失败', e);
+      });
+    };
 
     // 浏览器 overlay 只渲染 display ∈ {web, both} 的宠物；desktop / none 不参与网页显示
     const visiblePets = pets.filter((p) => isWebVisible(p.display));
@@ -1615,6 +1662,7 @@ export function makePetUI(rt: {
             workStatus,
             workStatusTick,
             arena: arenaRef,
+            reload: reloadConfig,
           }),
         )
       : null;

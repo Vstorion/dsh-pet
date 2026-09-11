@@ -9,6 +9,22 @@ import type { Animations, Pet, PetDisplay, PhysicsParams, Weights } from './type
 /** 显示位置白名单 */
 export const PET_DISPLAYS: PetDisplay[] = ['web', 'desktop', 'both', 'none'];
 
+/** 角色透明度边界（与 src/host/config.ts 的 OPACITY_MIN/MAX 必须一致——host 自包含不 import 本目录）。
+ *  下限 0.1：再低角色近乎隐形（用户会以为宠物丢了）；上限 1 = 完全不透明。 */
+export const OPACITY_MIN = 0.1;
+export const OPACITY_MAX = 1;
+/** 合并器填满后的成品值兜底（架构上不该用到：readAllConfig 已保证字段填满） */
+export const DEFAULT_OPACITY = 1;
+
+/** 把任意 opacity 值收敛成可渲染的 0.1~1 数字（渲染端防御：非法/缺失 → 1） */
+export function clampOpacity(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_OPACITY;
+  if (n < OPACITY_MIN) return OPACITY_MIN;
+  if (n > OPACITY_MAX) return OPACITY_MAX;
+  return n;
+}
+
 /** 该宠物是否参与浏览器 overlay 渲染 */
 export const isWebVisible = (display: PetDisplay): boolean => display === 'web' || display === 'both';
 
